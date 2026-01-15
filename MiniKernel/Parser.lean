@@ -347,8 +347,7 @@ def parseQuotInfo (obj : Std.TreeMap.Raw String Json) : M Unit := do
   | _ => fail s!"unknown quot kind: {kindStr}"
 
 def parseInductInfo (_obj : Std.TreeMap.Raw String Json) : M Unit := do
-  -- fail "Inductive types not yet supported"
-  pure ()
+  fail "Inductive types not yet supported"
   /-
   let some (.obj data) := obj["inductInfo"]? | fail s!"inductInfo invalid"
   let some (.num (nameIdx : Nat)) := data["name"]? | fail s!"inductInfo invalid"
