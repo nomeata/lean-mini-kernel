@@ -1,0 +1,220 @@
+import MiniKernel.Types
+import MiniKernel.PP
+
+def Expr.shift (e : Expr) (n : Nat := 0) (d : Nat := 1) : Expr := match e with
+  | .bvar idx => if idx >= n then .bvar (idx + d) else e
+  | .app f a => .app (f.shift n d) (a.shift n d)
+  | .lam name type body => .lam name (type.shift n d) (body.shift (n + 1) d)
+  | .forall name type body => .forall name (type.shift n d) (body.shift (n + 1) d)
+  | .let name type value body =>
+    .let name (type.shift n d) (value.shift n d) (body.shift (n + 1) d)
+  | .proj name idx e => .proj name idx (e.shift n d)
+  | .const .. | .sort .. | .natLit .. | .strLit .. => e
+
+def Expr.subst (e : Expr) (n : Nat := 0) (s : Expr) : Expr := match e with
+  | Expr.bvar idx =>
+    if idx == n then s
+    else if idx > n then Expr.bvar (idx - 1)
+    else e
+  | .const name levels =>
+    .const name levels
+  | .app f a => .app (f.subst n s) (a.subst n s)
+  | .lam name type body => .lam name (type.subst n s) (body.subst (n + 1) s.shift)
+  | .forall name type body => .forall name (type.subst n s) (body.subst (n + 1) s.shift)
+  | .let name type value body =>
+    .let name (type.subst n s) (value.subst n s) (body.subst (n + 1) s.shift)
+  | .proj name idx e => .proj name idx (e.subst n s)
+  | .sort .. | .natLit .. | .strLit .. => e
+
+structure LEnv where
+  env : Environment
+  /-- Valid level parameters -/
+  lparams : Std.HashSet Name
+  /-- Types of deBruijn indices -/
+  lenv : List Expr := []
+
+abbrev LEnvM := ReaderT LEnv (Except String)
+
+def Level.substLevel (l : Level) (f : Name → LEnvM Level) : LEnvM Level :=
+  match l with
+  | .param n => f n
+  | .zero => return .zero
+  | .succ l' => return .succ (← l'.substLevel f)
+  | .max l1 l2 => return .max (← l1.substLevel f) (← l2.substLevel f)
+  | .imax l1 l2 => return .imax (← l1.substLevel f) (← l2.substLevel f)
+
+def Expr.substLevel (e : Expr) (f : Name → LEnvM Level) : LEnvM Expr := match e with
+  | .const name levels => return .const name (← levels.mapM (·.substLevel f))
+  | .app fn a => return .app (← fn.substLevel f) (← a.substLevel f)
+  | .lam name type body =>
+    return .lam name (← type.substLevel f) (← body.substLevel f)
+  | .forall name type body =>
+    return .forall name (← type.substLevel f) (← body.substLevel f)
+  | .let name type value body =>
+    return .let name (← type.substLevel f) (← value.substLevel f) (← body.substLevel f)
+  | .proj name idx e =>
+    return .proj name idx (← e.substLevel f)
+  | .sort l => return .sort (← l.substLevel f)
+  | .bvar .. | .natLit .. | .strLit .. => return e
+
+def sort (e : Expr) : LEnvM Level :=
+  match e with
+  | .sort u => return u
+  | _ => throw "Expected a sort"
+
+def assertIsSort (e : Expr) : LEnvM Unit := discard <| sort e
+
+def openType (type : Expr) : LEnvM α → LEnvM α :=
+  withReader (fun lenv => { lenv with lenv := type :: lenv.lenv })
+
+def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
+  match cinfo with
+  | .axiom _ type => type
+  | .def _ type _ _ => type
+  | .special _ type => type
+
+def ConstantInfo.lparams (cinfo : ConstantInfo) : List Name  :=
+  match cinfo with
+  | .axiom lparams _ => lparams
+  | .def lparams _ _ _ => lparams
+  | .special lparams _ => lparams
+
+def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
+  match cinfo with
+  | .axiom _ _ => none
+  | .def _ _ value _ => some value
+  | .special _ _ => none
+
+@[extern "assertIsDefEq"]
+opaque assertIsDefEq (e1 e2 : Expr) : LEnvM Unit
+
+def Expr.instantiateLParams (e : Expr) (lparams : List Name) (levels : List Level) : LEnvM Expr := do
+  unless levels.length = lparams.length do
+    throw s!"Expected {lparams.length} levels, got {levels.length}"
+  e.substLevel fun n =>
+    match lparams.idxOf? n with
+    | some idx => return levels[idx]!
+    | none => throw s!"Level parameter {PP.pp n} not found"
+
+partial def whnf : Expr → LEnvM Expr
+  | e@(.const name levels) => do
+    let some cinfo := (← read).env.consts[name]?  | throw s!"Unknown constant {pp name}"
+    let some value := cinfo.value?  | return e
+    let value ← value.instantiateLParams cinfo.lparams levels
+    pure value
+  | .app f a => do
+    let f' ← whnf f
+    match f' with
+    | .lam _ _ body => whnf (body.subst 0 a)
+    | _ => return .app f' a
+  | e => return e  -- Very naive implementation: no reduction
+
+partial def inferType : Expr → LEnvM Expr
+  | .bvar idx => do
+    let some t := (← read).lenv[idx]?
+      |  throw s!"deBruijn index #{idx} out of bounds"
+    return t
+  | .const name levels => do
+    let some cinfo := (← read).env.consts[name]?
+      | throw s!"Unknown constant {pp name}"
+    let type := cinfo.type
+    let type ← type.instantiateLParams cinfo.lparams levels
+    pure type
+  | .sort u => do
+    return .sort u.succ
+  | .app f arg => do
+    let fType ← inferType f
+    let fType ← whnf fType
+    match fType with
+    | .forall _ type body => do
+      let argType ← inferType arg
+      assertIsDefEq type argType
+      return body.subst 0 arg
+    | _ => throw s!"Expected a function type in application of {pp f} to {pp arg}, got {pp fType}"
+  | .forall _ type body => do
+    let s1 ← inferType type
+    let l1 ← sort s1
+    let s2 ← openType type <| inferType body
+    let l2 ← sort s2
+    let u := Level.imax l1 l2
+    return .sort u
+  | .lam name type body => do
+    let s1 ← inferType type
+    assertIsSort s1
+    let t2 ← openType type <| inferType body
+    return .forall name type t2
+  | e => throw <| "Type inference not yet implemented:\n" ++ pp e
+
+/--
+Smart constructor that ensures the invariant that the rhs of `imax` is always a parameter.
+-/
+def Level.mkIMax (l1 l2 : Level) : Level :=
+  match l2 with
+  | .zero =>        .zero
+  | .succ _ =>      .max l1 l2
+  | .max l21 l22 => .max (l1.mkIMax l21) (l1.mkIMax l22)
+  | .imax l21 l22 =>.mkIMax (l1.max l21) l22
+  | .param _  =>    .imax l1 l2
+
+/--
+Simplification ensures the invariant that the rhs of an `imax` is always a parameter.
+-/
+partial def Level.simplify : Level → Level
+  | .zero => .zero
+  | .succ l => .succ (l.simplify)
+  | .max l1 l2 => .max (l1.simplify) (l2.simplify)
+  | .imax l1 l2 => .mkIMax (l1.simplify) (l2.simplify)
+  | .param n => .param n
+
+-- Implementation from https://ammkrn.github.io/type_checking_in_lean4/levels.html
+-- TOODO: Params
+partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
+  match l1, l2 with
+  | .succ l1', l2 => le l1' l2 (balance - 1)
+  | l1, .succ l2' => le l1 l2' (balance + 1)
+  | .max l1a l1b, l2 =>
+    le l1a l2 balance <&&> le l1b l2 balance
+  | l1, .max l2a l2b =>
+    le l1 l2a balance <||> le l1 l2b balance
+  | .zero, .zero => if balance >= 0 then return true else return false
+  | .param n, .param m => return n == m && balance >= 0
+  | l1, l2 => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2}"
+
+def assertLevelLe (l1 l2 : Level) : LEnvM Unit :=
+  unless (← l1.simplify.le l2.simplify) do
+    throw s!"Expected level inequality does not hold: {pp l1} ≤ {pp l2}"
+
+def assertLevelEq (l1 l2 : Level) : LEnvM Unit :=
+  unless (← l1.simplify.le l2.simplify) && (← l2.simplify.le l1.simplify) do
+    throw s!"Expected level equality does not hold: {pp l1} = {pp l2}"
+
+@[export assertIsDefEq]
+partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
+  let e1 ← whnf e1
+  let e2 ← whnf e2
+  match e1, e2 with
+  | .sort l1, .sort l2 =>
+    assertLevelEq l1 l2
+  | .forall _ t1 b1, .forall _ t2 b2 =>
+    assertIsDefEq t1 t2
+    openType t1 <| assertIsDefEq b1 b2
+  | e1, e2 =>
+    throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
+
+
+def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
+  match decl with
+  | .axiom name lparams type =>
+    return { env with consts := env.consts.insert name (.axiom lparams type) }
+  | .def name lparams type value isUnsafe => do
+    -- TODO: Check duplicate lparams
+    ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      let s ← inferType type
+      assertIsSort s
+      let type' ← inferType value
+      assertIsDefEq type type'
+      pure ()
+    return { env with consts := env.consts.insert name (.def lparams type value isUnsafe) }
+  | .quot =>
+    -- throw "Quotients not yet supported"
+    pure env

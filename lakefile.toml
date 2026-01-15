@@ -1,0 +1,11 @@
+name = "MiniKernel"
+version = "0.1.0"
+defaultTargets = ["mini-kernel"]
+
+[[lean_lib]]
+name = "MiniKernel"
+root = "MiniKernel"
+
+[[lean_exe]]
+name = "mini-kernel"
+root = "Main"
