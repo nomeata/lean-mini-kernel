@@ -207,7 +207,8 @@ def Environment.add (env : Environment) (decl : Declaration) : Except String Env
   | .axiom name lparams type =>
     return { env with consts := env.consts.insert name (.axiom lparams type) }
   | .def name lparams type value isUnsafe => do
-    -- TODO: Check duplicate lparams
+    unless lparams.Nodup do
+      throw s!"Duplicate level parameters in declaration of {pp name}"
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       let s ← inferType type
       assertIsSort s
