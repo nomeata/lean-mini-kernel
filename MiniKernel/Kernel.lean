@@ -13,7 +13,7 @@ def Expr.shift (e : Expr) (n : Nat := 0) (d : Nat := 1) : Expr := match e with
 
 def Expr.subst (e : Expr) (n : Nat := 0) (s : Expr) : Expr := match e with
   | Expr.bvar idx =>
-    if idx == n then s
+    if idx = n then s
     else if idx > n then Expr.bvar (idx - 1)
     else e
   | .const name levels =>
@@ -35,6 +35,11 @@ structure LEnv where
 
 abbrev LEnvM := ReaderT LEnv (Except String)
 
+def appendError {α} (msg : Unit → String) (action : LEnvM α) : LEnvM α := do
+  match action.run (← read) with
+  | .ok a => return a
+  | .error e => throw (e ++ "\n" ++ msg ())
+
 def Level.substLevel (l : Level) (f : Name → LEnvM Level) : LEnvM Level :=
   match l with
   | .param n => f n
@@ -42,6 +47,9 @@ def Level.substLevel (l : Level) (f : Name → LEnvM Level) : LEnvM Level :=
   | .succ l' => return .succ (← l'.substLevel f)
   | .max l1 l2 => return .max (← l1.substLevel f) (← l2.substLevel f)
   | .imax l1 l2 => return .imax (← l1.substLevel f) (← l2.substLevel f)
+
+def Level.substOneLevel (l : Level) (n : Name) (l' : Level) : LEnvM Level :=
+  l.substLevel fun m => if m == n then return l' else return .param m
 
 def Expr.substLevel (e : Expr) (f : Name → LEnvM Level) : LEnvM Expr := match e with
   | .const name levels => return .const name (← levels.mapM (·.substLevel f))
@@ -101,19 +109,20 @@ partial def whnf : Expr → LEnvM Expr
     let some cinfo := (← read).env.consts[name]?  | throw s!"Unknown constant {pp name}"
     let some value := cinfo.value?  | return e
     let value ← value.instantiateLParams cinfo.lparams levels
-    pure value
+    whnf value
   | .app f a => do
     let f' ← whnf f
     match f' with
     | .lam _ _ body => whnf (body.subst 0 a)
-    | _ => return .app f' a
+    | _ =>
+      return .app f' a
   | e => return e  -- Very naive implementation: no reduction
 
 partial def inferType : Expr → LEnvM Expr
   | .bvar idx => do
     let some t := (← read).lenv[idx]?
       |  throw s!"deBruijn index #{idx} out of bounds"
-    return t
+    return t.shift (d := idx + 1)
   | .const name levels => do
     let some cinfo := (← read).env.consts[name]?
       | throw s!"Unknown constant {pp name}"
@@ -166,19 +175,28 @@ partial def Level.simplify : Level → Level
   | .imax l1 l2 => .mkIMax (l1.simplify) (l2.simplify)
   | .param n => .param n
 
--- Implementation from https://ammkrn.github.io/type_checking_in_lean4/levels.html
+-- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
 -- TOODO: Params
+mutual
 partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
   match l1, l2 with
-  | .succ l1', l2 => le l1' l2 (balance - 1)
-  | l1, .succ l2' => le l1 l2' (balance + 1)
+  | .succ l1', l2 => Level.le l1' l2 (balance - 1)
+  | l1, .succ l2' => Level.le l1 l2' (balance + 1)
   | .max l1a l1b, l2 =>
-    le l1a l2 balance <&&> le l1b l2 balance
+    Level.le l1a l2 balance <&&> Level.le l1b l2 balance
   | l1, .max l2a l2b =>
-    le l1 l2a balance <||> le l1 l2b balance
+    Level.le l1 l2a balance <||> Level.le l1 l2b balance
   | .zero, .zero => if balance >= 0 then return true else return false
   | .param n, .param m => return n == m && balance >= 0
+  | .imax _ (.param p), _ | _, .imax _ (.param p) =>
+    cases p l1 l2
   | l1, l2 => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2}"
+
+partial def cases (p : Name) (l1 l2 : Level) : LEnvM Bool := do
+  (← l1.substOneLevel p Level.zero).simplify.le (← l2.substOneLevel p Level.zero).simplify
+    <&&>
+  (← l1.substOneLevel p (Level.param p).succ).simplify.le (← l2.substOneLevel p (Level.param p).succ).simplify
+end
 
 def assertLevelLe (l1 l2 : Level) : LEnvM Unit :=
   unless (← l1.simplify.le l2.simplify) do
@@ -190,6 +208,7 @@ def assertLevelEq (l1 l2 : Level) : LEnvM Unit :=
 
 @[export assertIsDefEq]
 partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
+  appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
   let e1 ← whnf e1
   let e2 ← whnf e2
   match e1, e2 with
@@ -198,6 +217,15 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   | .forall _ t1 b1, .forall _ t2 b2 =>
     assertIsDefEq t1 t2
     openType t1 <| assertIsDefEq b1 b2
+  | .lam _ t1 b1, .lam _ t2 b2 =>
+    assertIsDefEq t1 t2
+    openType t1 <| assertIsDefEq b1 b2
+  | .bvar n1, .bvar n2 =>
+    unless n1 == n2 do
+      throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
+  | .app f1 a1, .app f2 a2 =>
+    assertIsDefEq f1 f2
+    assertIsDefEq a1 a2
   | e1, e2 =>
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
 
