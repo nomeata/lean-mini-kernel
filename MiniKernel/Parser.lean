@@ -19,6 +19,7 @@ structure State where
   nameMap : Std.HashMap Nat Name := { (0, .anonymous) }
   levelMap : Std.HashMap Nat Level := { (0, .zero) }
   exprMap : Std.HashMap Nat Expr := {}
+  ctorMap : Std.HashMap Name Expr := {}
   decls : Array Declaration := #[]
 
 abbrev M := StateT State <| IO
@@ -346,9 +347,8 @@ def parseQuotInfo (obj : Std.TreeMap.Raw String Json) : M Unit := do
   | "ind" => pure ()
   | _ => fail s!"unknown quot kind: {kindStr}"
 
-def parseInductInfo (_obj : Std.TreeMap.Raw String Json) : M Unit := do
+def parseInductInfo (obj : Std.TreeMap.Raw String Json) : M Unit := do
   fail "Inductive types not yet supported"
-  /-
   let some (.obj data) := obj["inductInfo"]? | fail s!"inductInfo invalid"
   let some (.num (nameIdx : Nat)) := data["name"]? | fail s!"inductInfo invalid"
   let some (.arr levelParamsIdxs) := data["levelParams"]? | fail s!"inductInfo invalid"
@@ -358,33 +358,44 @@ def parseInductInfo (_obj : Std.TreeMap.Raw String Json) : M Unit := do
   let some (.arr allIdxs) := data["all"]? | fail s!"inductInfo invalid"
   let some (.arr ctorsIdxs) := data["ctors"]? | fail s!"inductInfo invalid"
   let some (.num (numNested : Nat)) := data["numNested"]? | fail s!"inductInfo invalid"
-  let some (.bool isRec) := data["isRec"]? | fail s!"inductInfo invalid"
+  let some (.bool _isRec) := data["isRec"]? | fail s!"inductInfo invalid"
   let some (.bool isUnsafe) := data["isUnsafe"]? | fail s!"inductInfo invalid"
-  let some (.bool isReflexive) := data["isReflexive"]? | fail s!"inductInfo invalid"
+  let some (.bool _isReflexive) := data["isReflexive"]? | fail s!"inductInfo invalid"
+
+  if isUnsafe then fail "Unsafe inductives are not supported"
+  if allIdxs.size > 0 then fail "Mutual inductives are not supported"
+  if numNested > 0 then fail "Nested inductives are not supported"
 
   let name ← getName nameIdx
   let levelParams ← getNameList levelParamsIdxs
   let type ← getExpr typeIdx
-  let all ← getNameList allIdxs
-  let ctors ← getNameList ctorsIdxs
+  let ctorNames ← getNameList ctorsIdxs
+  let ctors ← ctorNames.toArray.mapM fun ctorName => do
+    let some ctorType := (← get).ctorMap[ctorName]?
+      | fail s!"Constructor type not found"
+    return (ctorName, ctorType)
 
-  addDecl name <| .inductInfo {
-    name,
-    levelParams,
-    type,
-    numParams,
-    numIndices,
-    all,
-    ctors,
-    numNested,
-    isRec,
-    isUnsafe,
-    isReflexive,
-  }
-  -/
+  addDecl <| .inductive
+    name
+    levelParams
+    numParams
+    type
+    ctors
 
-def parseCtorInfo (_obj : Std.TreeMap.Raw String Json) : M Unit := do
-  pure ()
+def parseCtorInfo (obj : Std.TreeMap.Raw String Json) : M Unit := do
+  let some (.obj data) := obj["ctorInfo"]? | fail s!"ctorInfo invalid"
+  let some (.num (nameIdx : Nat)) := data["name"]? | fail s!"ctorInfo invalid"
+  let some (.num (inductIdx : Nat)) := data["induct"]? | fail s!"ctorInfo invalid"
+  let some (.arr _levelParamsIdxs) := data["levelParams"]? | fail s!"ctorInfo invalid"
+  let some (.num (typeIdx : Nat)) := data["type"]? | fail s!"ctorInfo invalid"
+  let some (.num (numFields : Nat)) := data["numFields"]? | fail s!"ctorInfo invalid"
+  let some (.num (numParams : Nat)) := data["numParams"]? | fail s!"ctorInfo invalid"
+  let some (.bool isUnsafe) := data["isUnsafe"]? | fail s!"ctorInfo invalid"
+  if isUnsafe then fail "Unsafe inductives are not supported"
+
+  let name ← getName nameIdx
+  let expr ← getExpr typeIdx
+  modify fun s => { s with ctorMap := s.ctorMap.insert name expr }
 
 def parseRecInfo (_obj : Std.TreeMap.Raw String Json) : M Unit := do
   pure ()

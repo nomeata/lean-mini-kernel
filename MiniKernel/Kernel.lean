@@ -30,7 +30,12 @@ structure LEnv where
   env : Environment
   /-- Valid level parameters -/
   lparams : Std.HashSet Name
-  /-- Types of deBruijn indices -/
+  /--
+  Local typing environment, as a telescope.
+
+  The type of `.bvar` is `lenv[i]`, where a `.bvar j` in that type has
+  type `lenv[i + j + 1]`.
+  -/
   lenv : List Expr := []
 
 abbrev LEnvM := ReaderT LEnv (Except String)
@@ -247,3 +252,7 @@ def Environment.add (env : Environment) (decl : Declaration) : Except String Env
   | .quot =>
     -- throw "Quotients not yet supported"
     pure env
+  | .inductive name lparams numParams type ctors => do
+    unless lparams.Nodup do
+      throw s!"Duplicate level parameters in declaration of {pp name}" -- TODO: Write test
+    throw "Inductives not yet supported "

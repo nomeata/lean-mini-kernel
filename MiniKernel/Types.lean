@@ -40,11 +40,13 @@ inductive Declaration where
   | «axiom» : (name : Name) → (levelParams : List Name) → (type : Expr) → Declaration
   | «def» : (name : Name) → (levelParams : List Name) → (type : Expr) → (value : Expr) → (kind : DefKind) → Declaration
   | «quot» : Declaration
+  | «inductive» : (name : Name) → (levelParams : List Name) → (numParams : Nat) → (type : Expr) → (ctors : Array (Name × Expr)) → Declaration
 
 def Declaration.name : Declaration → Name
   | .axiom name _ _ => name
   | .def name _ _ _ _ => name
   | .quot => Name.anonymous.str "Quot"
+  | .inductive name .. => name
 
 /--
 A ConstantInfo is what the kernel stores in the environment.

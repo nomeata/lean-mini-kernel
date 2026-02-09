@@ -18,7 +18,7 @@ def main (args : List String) : IO Unit := do
   let (inputPath, parseOnly) ← match args with
     | ["--parse-only", inputPath] => pure (inputPath, true)
     | [inputPath] => pure (inputPath, false)
-    | _ => throw <| .userError "Expected input file path as first argument, optionally followed by --parse-only."
+    | _ => throw <| .userError "Expected input file path as first argument, optionally preceded by --parse-only."
   let handle ← IO.FS.Handle.mk inputPath .read
   let decls ←
     try
