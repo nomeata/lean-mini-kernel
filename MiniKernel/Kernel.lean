@@ -159,6 +159,9 @@ partial def inferType : Expr → LEnvM Expr
     return .forall name type t2
   | e => throw <| "Type inference not yet implemented:\n" ++ pp e
 
+def checkType (e : Expr) : LEnvM Unit := do
+  let _ ← inferType e
+
 /--
 Smart constructor that ensures the invariant that the rhs of `imax` is always a parameter.
 -/
@@ -251,7 +254,29 @@ partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnv
   else
     k 0 type
 
-def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
+def hasConst (n : Name) : Expr → Bool
+  | .const name _ => name == n
+  | .app f a => hasConst n f || hasConst n a
+  | .lam _ type body => hasConst n type || hasConst n body
+  | .forall _ type body => hasConst n type || hasConst n body
+  | .let _ type value body => hasConst n type || hasConst n value || hasConst n body
+  | .proj _ _ e => hasConst n e
+  | .bvar .. | .sort .. | .natLit .. | .strLit .. => false
+
+/- Are the parameters defeq -/
+partial def defEqParams (n : Nat) (type1 type2 : Expr) : LEnvM Unit := do
+  match n with
+  | 0 => pure ()
+  | n+1 =>
+    let type1' ← whnf type1
+    let type2' ← whnf type2
+    let .forall _ domain1 body1 := type1' | throw s!"Expected a function type, got {pp type1}"
+    let .forall _ domain2 body2 := type2' | throw s!"Expected a function type, got {pp type2}"
+    assertIsDefEq domain1 domain2
+    openType domain1 do
+      defEqParams n body1 body2
+
+partial def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
   match decl with
   | .axiom name lparams type =>do
     unless lparams.Nodup do
@@ -274,21 +299,48 @@ def Environment.add (env : Environment) (decl : Declaration) : Except String Env
   | .quot =>
     -- throw "Quotients not yet supported"
     pure env
-  | .inductive name lparams numParams type ctors => do
+  | .inductive indName lparams numParams indType ctors => do
     unless lparams.Nodup do
-      throw s!"Duplicate level parameters in declaration of {pp name}" -- TODO: Write test
-    ReaderT.run (r := { env, lparams := .ofList lparams}) do
-      appendError (fun _ => s!"… while checking type of inductive {pp name}") do
-        openForall numParams type fun _ =>
-          openForallEager type fun _numIndices type =>
-            assertIsSort type
+      throw s!"Duplicate level parameters in declaration of {pp indName}" -- TODO: Write test
+    let _numIndices ←
+      ReaderT.run (r := { env, lparams := .ofList lparams}) do
+        appendError (fun _ => s!"… while checking type of inductive {pp indName}") do
+          checkType indType
+          openForall numParams indType fun _ =>
+            openForallEager indType fun numIndices indType => do
+              assertIsSort indType
+              return numIndices
 
-    let env := { env with consts := env.consts.insert name (.special lparams type) }
+    let env := { env with consts := env.consts.insert indName (.special lparams indType) }
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
-      for (_ctorName, ctorType) in ctors do
-        appendError (fun _ => s!"… while checking type of constructor {pp _ctorName}") do
-          let s ← inferType ctorType
-          assertIsSort s
-          openForall numParams type fun _ => pure ()
+      for (ctorName, ctorType) in ctors do
+        appendError (fun _ => s!"… while checking type of constructor {pp ctorName}") do
+          checkType ctorType
+        appendError (fun _ => s!"… while checking parameters of constructor {pp ctorName} match those of {pp indName}") do
+          defEqParams numParams indType ctorType
+
+        let isValidIndApp (_shift : Nat) (_type : Expr) : LEnvM Unit := do
+          return ()
+
+        let rec checkCtorParam shift argIdx ctorParam := do
+          if (hasConst indName ctorParam) then
+            appendError (fun _ => s!"… while checking argument {argIdx} of {pp ctorType}") do
+              -- TODO: Reflexive occurrences
+              isValidIndApp shift ctorParam
+
+        let rec checkCtorType shift argIdx ctorType := do
+          let ctorType ← whnf ctorType
+          if let .forall _ domain body := ctorType then
+            checkCtorParam shift argIdx domain
+            openType domain do
+              checkCtorType (shift + 1) (argIdx + 1) body
+          else
+            appendError (fun _ => s!"… while checking return type of {pp ctorType}") do
+              isValidIndApp shift ctorType
+
+        openForall numParams ctorType fun ctorType => do
+          checkCtorType 0 (numParams + 1) ctorType
+
+
 
       throw "Inductives not yet supported "
