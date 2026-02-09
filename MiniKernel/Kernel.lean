@@ -73,7 +73,7 @@ def Expr.substLevel (e : Expr) (f : Name → LEnvM Level) : LEnvM Expr := match 
 def sort (e : Expr) : LEnvM Level :=
   match e with
   | .sort u => return u
-  | _ => throw "Expected a sort"
+  | _ => throw s!"Expected a sort, got {pp e}"
 
 def assertIsSort (e : Expr) : LEnvM Unit := discard <| sort e
 
@@ -234,10 +234,31 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   | e1, e2 =>
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
 
+def openForall (n : Nat) (type : Expr) (k : Expr → LEnvM α) : LEnvM α := do
+  match n with
+  | 0 => k type
+  | n+1 =>
+    let type' ← whnf type
+    let .forall _ domain body := type' | throw s!"Insufficient number of parameters: {pp type}"
+    openType domain do
+      openForall n body k
+
+partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnvM α := do
+  let type' ← whnf type
+  if let .forall _ domain body := type' then
+    openType domain do
+        openForallEager body fun n r => k (n + 1) r
+  else
+    k 0 type
 
 def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
   match decl with
-  | .axiom name lparams type =>
+  | .axiom name lparams type =>do
+    unless lparams.Nodup do
+      throw s!"Duplicate level parameters in declaration of {pp name}"
+    ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      let _ ← inferType type
+    -- TODO: Check for duplicate names
     return { env with consts := env.consts.insert name (.axiom lparams type) }
   | .def name lparams type value isUnsafe => do
     unless lparams.Nodup do
@@ -248,11 +269,26 @@ def Environment.add (env : Environment) (decl : Declaration) : Except String Env
       let type' ← inferType value
       assertIsDefEq type type'
       pure ()
+    -- TODO: Check for duplicate names
     return { env with consts := env.consts.insert name (.def lparams type value isUnsafe) }
   | .quot =>
     -- throw "Quotients not yet supported"
     pure env
-  | .inductive name lparams _numParams _type _ctors => do
+  | .inductive name lparams numParams type ctors => do
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp name}" -- TODO: Write test
-    throw "Inductives not yet supported "
+    ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      appendError (fun _ => s!"… while checking type of inductive {pp name}") do
+        openForall numParams type fun _ =>
+          openForallEager type fun _numIndices type =>
+            assertIsSort type
+
+    let env := { env with consts := env.consts.insert name (.special lparams type) }
+    ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      for (_ctorName, ctorType) in ctors do
+        appendError (fun _ => s!"… while checking type of constructor {pp _ctorName}") do
+          let s ← inferType ctorType
+          assertIsSort s
+          openForall numParams type fun _ => pure ()
+
+      throw "Inductives not yet supported "
