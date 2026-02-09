@@ -252,7 +252,7 @@ def Environment.add (env : Environment) (decl : Declaration) : Except String Env
   | .quot =>
     -- throw "Quotients not yet supported"
     pure env
-  | .inductive name lparams numParams type ctors => do
+  | .inductive name lparams _numParams _type _ctors => do
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp name}" -- TODO: Write test
     throw "Inductives not yet supported "
