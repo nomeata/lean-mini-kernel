@@ -330,7 +330,7 @@ def parseInductInfo (json : Json) : M Unit := do
   let some (.bool _isReflexive) := data["isReflexive"]? | fail s!"inductInfo invalid"
 
   if isUnsafe then fail "Unsafe inductives are not supported"
-  if allIdxs.size > 0 then fail "Mutual inductives are not supported"
+  if allIdxs.size > 1 then fail "Mutual inductives are not supported"
   if numNested > 0 then fail "Nested inductives are not supported"
 
   let name ← getName nameIdx
