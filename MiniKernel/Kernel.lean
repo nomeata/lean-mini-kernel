@@ -432,13 +432,11 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       go ctorType
 
 
-    -- TODO: Eliminate not always into sort
     let (motiveLevel, lparams') ← if elimToSort then
       let v := freshLevelName lparams
       pure (.param v, v::lparams)
     else
       pure (.zero, lparams)
-    do
     let us := lparams.map .param
     let recType ← ReaderT.run (r := { env, lparams := .ofList lparams'}) do
       -- 1. Parameters
