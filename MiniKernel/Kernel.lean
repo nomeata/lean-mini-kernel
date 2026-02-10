@@ -5,6 +5,9 @@ def Expr.getApp : Expr → Expr × Array Expr
   | .app f a => let (f, xs) := f.getApp; (f, xs.push a)
   | e => (e, #[])
 
+def Expr.appN (f : Expr) (args : Array Expr) : Expr :=
+  args.foldl .app f
+
 def Expr.shift (e : Expr) (n : Nat := 0) (d : Nat := 1) : Expr := match e with
   | .bvar idx => if idx >= n then .bvar (idx + d) else e
   | .app f a => .app (f.shift n d) (a.shift n d)
@@ -83,6 +86,9 @@ def assertIsSort (e : Expr) : LEnvM Unit := discard <| sort e
 
 def openType (type : Expr) : LEnvM α → LEnvM α :=
   withReader (fun lenv => { lenv with lenv := type :: lenv.lenv })
+
+def openTypes (types : Array Expr) : LEnvM α → LEnvM α :=
+  withReader (fun lenv => { lenv with lenv := types.reverse.toList ++ lenv.lenv })
 
 def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   match cinfo with
@@ -265,6 +271,14 @@ def openForall (n : Nat) (type : Expr) (k : Expr → LEnvM α) : LEnvM α := do
     openType domain do
       openForall n body k
 
+def instantiateForalls (type : Expr) (xs : Array Expr) : LEnvM Expr := do
+  let mut result := type
+  for x in xs do
+    let type' ← whnf result
+    let .forall _ _ body := type' | throw s!"Expected a function type, got {pp type'}"
+    result := body.subst x
+  return result
+
 partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnvM α := do
   let type' ← whnf type
   if let .forall _ domain body := type' then
@@ -272,6 +286,11 @@ partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnv
         openForallEager body fun n r => k (n + 1) r
   else
     k 0 type
+
+/-- Wrapps `types` in `n` foralls, with types taken from the local environment -/
+def mkForall (n : Nat) (body : Expr) : LEnvM Expr := do
+  let types := (← read).lenv.take n
+  return types.foldl (fun body type => .forall .anonymous type body) body
 
 def hasConst (n : Name) : Expr → Bool
   | .const name _ => name == n
@@ -324,6 +343,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     let mut env := env
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp indName}" -- TODO: Write test
+    let numCtors := ctors.size
     let numIndices ←
       ReaderT.run (r := { env, lparams := .ofList lparams}) do
         appendError (fun _ => s!"… while checking type of inductive {pp indName}") do
@@ -343,9 +363,9 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
 
         let isValidIndApp (shift : Nat) (type : Expr) : LEnvM Unit := do
           let (.const f us, args) := type.getApp |
-            throw s!"Expected an applicaiton headed by an inductive, got {pp type}"
+            throw s!"Expected an application headed by the current inductive, got {pp type}"
           unless f == indName do
-            throw s!"Expected an application of {pp indName}, got {pp type}"
+            throw s!"Expected an application headed by the current inductive, got {pp type}"
           unless us == lparams.map (.param) do
             throw s!"Level parameters do not match those of {pp indName} in {pp type}"
           unless args.size = numParams + numIndices do
@@ -379,4 +399,50 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
 
     for (ctorName, ctorType) in ctors do
       env := { env with consts := env.consts.insert ctorName (.opaque lparams ctorType) }
+
+    -- Now we can generate the recursors
+    let us := lparams.map .param
+    let recType ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      -- 1. Parameters
+      let recType ← openForall numParams indType fun _indType => do
+        -- 2. Motive
+        let motiveType ← openForall numIndices indType fun _majorType => do
+          let idxs := (Array.range numIndices).reverse.map .bvar
+          let majorType := (Expr.const indName us).appN idxs
+          openType majorType do
+            -- TODO: Eliminate into more than just Prop
+            mkForall (numIndices + 1) (.sort .zero)
+        openType motiveType do
+          -- 3. Minors
+          let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
+            let params := (Array.range numParams).reverse.map (Expr.bvar <| · + idx + 1)
+            let ctorType ← instantiateForalls ctorType params
+            openForallEager ctorType fun numFields _ctorType => do
+              let params := params.map (·.shift numFields)
+              let fields := (Array.range numFields).reverse.map (Expr.bvar <| ·)
+              let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
+              -- TODO: apply indices (read from ctorType)
+              let motive := Expr.bvar (idx + numFields)
+              let motiveApp := motive.app ctorApp
+              mkForall numFields motiveApp
+          openTypes minorTypes do
+            -- 4. Indices
+            openForall numIndices indType fun _majorType => do
+              -- 5. Major argument
+              let idxs := (Array.range numIndices).reverse.map .bvar
+              let majorType := (Expr.const indName us).appN idxs
+              openType majorType do
+                -- 6. Result type: motive applied to indices and major argument
+                let motive : Expr := .bvar (numCtors + numIndices + 1)
+                let indices := (Array.range numIndices).reverse.map (fun i => .bvar (i + 1))
+                let major := .bvar 0
+                let resultType := motive.appN (indices ++ #[major])
+                mkForall (numParams + 1 + numCtors + numIndices + 1) resultType
+      -- Sanity check:
+      appendError (fun _ => s!"… while checking type of recursor for {pp indName}:\n{pp recType}") do
+        checkType recType
+      pure recType
+    let recName := indName.str "rec"
+    env := { env with consts := env.consts.insert recName (.opaque lparams recType) }
+
     pure env
