@@ -25,13 +25,12 @@ inductive Expr
   | sort : Level → Expr
   | proj : Name → (idx : Nat) → (e : Expr) → Expr
   | let : Name → (type value body : Expr) → Expr
-deriving BEq
+deriving Inhabited, BEq
 
 inductive DefKind where
   | «def»
   | «theorem»
   | «opaque»
-  | «quot»
 
 /--
 A Declaration is something that can be sent to the kernel.
@@ -52,8 +51,10 @@ def Declaration.name : Declaration → Name
 A ConstantInfo is what the kernel stores in the environment.
 -/
 inductive ConstantInfo
-  | «axiom» : (levelParams : List Name) → (type : Expr) → ConstantInfo
-  | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → (kind : DefKind) → ConstantInfo
+  /-- Any kind of inert opaque definition (axiom, opaque, inductive, constructor) -/
+  | «opaque» : (levelParams : List Name) → (type : Expr) → ConstantInfo
+  /-- Any kind of transparent definition (def, theorem) -/
+  | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → ConstantInfo
   /-- Used for the quotients and recursors -/
   | special : (levelParams : List Name) → (type : Expr) → ConstantInfo
 

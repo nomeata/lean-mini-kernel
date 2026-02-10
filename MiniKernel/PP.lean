@@ -36,7 +36,7 @@ instance : PP Level where pp := Level.pp
 partial def Expr.pp : Expr → String
   | .const name [] => name.pp
   | .const name levels =>
-    let levelStr := String.intercalate " " (levels.map Level.pp)
+    let levelStr := String.intercalate ", " (levels.map Level.pp)
     name.pp ++ ".{" ++ levelStr ++ "}"
   | .bvar idx => s!"#{idx}"
   | .app f arg =>
