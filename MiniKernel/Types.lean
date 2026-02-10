@@ -6,8 +6,6 @@ inductive Name where
   | num (pre : Name) (i : Nat)
 deriving BEq, Hashable, DecidableEq, Inhabited
 
-def Name.simple (s : String) : Name := .str .anonymous s
-
 inductive Level
   | zero : Level
   | succ : Level → Level

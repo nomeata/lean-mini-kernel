@@ -1,4 +1,5 @@
 import MiniKernel.Types
+import MiniKernel.ExprUtils
 
 class PP (α : Type) where
   pp : α → String
@@ -52,8 +53,11 @@ partial def Expr.pp : Expr → String
     let typeStr := match type with
       | .forall _ _ _ => s!"({type.pp})"
       | _ => type.pp
-    let nStr := if name matches Name.str .anonymous _ then name.pp else "_"
-    s!"∀ {nStr} : {typeStr}, {body.pp}"
+    if body.hasBVar 0 then
+      let nStr := if name matches Name.str .anonymous _ then name.pp else "_"
+      s!"∀ {nStr} : {typeStr}, {body.pp}"
+    else
+      s!"{typeStr} → {body.pp}"
   | .natLit n => toString n
   | .strLit s => s!"\"{s}\""
   | .sort level =>

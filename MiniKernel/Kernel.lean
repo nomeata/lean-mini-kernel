@@ -416,8 +416,9 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       let recType ← openForall numParams indType fun _indType => do
         -- 2. Motive
         let motiveType ← openForall numIndices indType fun _majorType => do
+          let params := (Array.range numParams).reverse.map (Expr.bvar <| · + numIndices)
           let idxs := (Array.range numIndices).reverse.map .bvar
-          let majorType := (Expr.const indName us).appN idxs
+          let majorType := (Expr.const indName us).appN (params ++ idxs)
           openType majorType do
             mkForall (numIndices + 1) (.sort (.param v))
         openType motiveType do
@@ -426,7 +427,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             let params := (Array.range numParams).reverse.map (Expr.bvar <| · + idx + 1)
             let ctorType ← instantiateForalls ctorType params
             openForallEager ctorType fun numFields _ctorType => do
-              let params := params.map (·.shift numFields)
+              let params := params.map (·.shift (d := numFields))
               let fields := (Array.range numFields).reverse.map (Expr.bvar <| ·)
               let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
               -- TODO: apply indices (read from ctorType)
@@ -437,8 +438,9 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             -- 4. Indices
             openForall numIndices indType fun _majorType => do
               -- 5. Major argument
+              let params := (Array.range numParams).reverse.map (Expr.bvar <| · + 1 + numCtors + numIndices)
               let idxs := (Array.range numIndices).reverse.map .bvar
-              let majorType := (Expr.const indName us).appN idxs
+              let majorType := (Expr.const indName us).appN (params ++ idxs)
               openType majorType do
                 -- 6. Result type: motive applied to indices and major argument
                 let motive : Expr := .bvar (numCtors + numIndices + 1)
