@@ -413,7 +413,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     let us := lparams.map .param
     let recType ← ReaderT.run (r := { env, lparams := .ofList lparams'}) do
       -- 1. Parameters
-      let recType ← openForall numParams indType fun _indType => do
+      let recType ← openForall numParams indType fun indType => do
         -- 2. Motive
         let motiveType ← openForall numIndices indType fun _majorType => do
           let params := (Array.range numParams).reverse.map (Expr.bvar <| · + numIndices)
@@ -426,17 +426,17 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
             let params := (Array.range numParams).reverse.map (Expr.bvar <| · + idx + 1)
             let ctorType ← instantiateForalls ctorType params
-            openForallEager ctorType fun numFields _ctorType => do
+            openForallEager ctorType fun numFields ctorType => do
               let params := params.map (·.shift (d := numFields))
               let fields := (Array.range numFields).reverse.map (Expr.bvar <| ·)
               let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
-              -- TODO: apply indices (read from ctorType)
+              let idxs := ctorType.getApp.2[numParams:numParams+numIndices]
               let motive := Expr.bvar (idx + numFields)
-              let motiveApp := motive.app ctorApp
+              let motiveApp := motive.appN (idxs ++ #[ctorApp])
               mkForall numFields motiveApp
           openTypes minorTypes do
             -- 4. Indices
-            openForall numIndices indType fun _majorType => do
+            openForall numIndices (indType.shift (d := 1 + numCtors)) fun _ => do
               -- 5. Major argument
               let params := (Array.range numParams).reverse.map (Expr.bvar <| · + 1 + numCtors + numIndices)
               let idxs := (Array.range numIndices).reverse.map .bvar
