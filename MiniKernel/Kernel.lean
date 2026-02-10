@@ -416,19 +416,19 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       let recType ← openForall numParams indType fun indType => do
         -- 2. Motive
         let motiveType ← openForall numIndices indType fun _majorType => do
-          let params := (Array.range numParams).reverse.map (Expr.bvar <| · + numIndices)
-          let idxs := (Array.range numIndices).reverse.map .bvar
+          let params := Expr.bvars numParams numIndices
+          let idxs := Expr.bvars numIndices
           let majorType := (Expr.const indName us).appN (params ++ idxs)
           openType majorType do
             mkForall (numIndices + 1) (.sort (.param v))
         openType motiveType do
           -- 3. Minors
           let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
-            let params := (Array.range numParams).reverse.map (Expr.bvar <| · + idx + 1)
+            let params := Expr.bvars numParams (idx + 1)
             let ctorType ← instantiateForalls ctorType params
             openForallEager ctorType fun numFields ctorType => do
               let params := params.map (·.shift (d := numFields))
-              let fields := (Array.range numFields).reverse.map (Expr.bvar <| ·)
+              let fields := Expr.bvars numFields
               let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
               let idxs := ctorType.getApp.2[numParams:numParams+numIndices]
               let motive := Expr.bvar (idx + numFields)
@@ -438,15 +438,15 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             -- 4. Indices
             openForall numIndices (indType.shift (d := 1 + numCtors)) fun _ => do
               -- 5. Major argument
-              let params := (Array.range numParams).reverse.map (Expr.bvar <| · + 1 + numCtors + numIndices)
-              let idxs := (Array.range numIndices).reverse.map .bvar
+              let params := Expr.bvars numParams (1 + numCtors + numIndices)
+              let idxs := Expr.bvars numIndices
               let majorType := (Expr.const indName us).appN (params ++ idxs)
               openType majorType do
                 -- 6. Result type: motive applied to indices and major argument
                 let motive : Expr := .bvar (numCtors + numIndices + 1)
-                let indices := (Array.range numIndices).reverse.map (fun i => .bvar (i + 1))
+                let idxs := Expr.bvars numIndices 1
                 let major := .bvar 0
-                let resultType := motive.appN (indices ++ #[major])
+                let resultType := motive.appN (idxs ++ #[major])
                 mkForall (numParams + 1 + numCtors + numIndices + 1) resultType
       -- Sanity check:
       appendError (fun _ => s!"… while checking type of recursor for {pp indName}:\n{pp recType}") do
