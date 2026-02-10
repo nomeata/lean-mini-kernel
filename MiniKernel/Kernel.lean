@@ -292,6 +292,12 @@ def mkForall (n : Nat) (body : Expr) : LEnvM Expr := do
   let types := (← read).lenv.take n
   return types.foldl (fun body type => .forall .anonymous type body) body
 
+partial def freshLevelName (used : List Name) : Name :=
+  let rec loop (n : Nat) : Name :=
+    let name := if n = 0 then .simple "v" else .simple s!"v{n}"
+    if used.contains name then loop (n + 1) else name
+  loop 0
+
 def hasConst (n : Name) : Expr → Bool
   | .const name _ => name == n
   | .app f a => hasConst n f || hasConst n a
@@ -401,8 +407,11 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       env := { env with consts := env.consts.insert ctorName (.opaque lparams ctorType) }
 
     -- Now we can generate the recursors
+    -- TODO: Eliminate not always into sort
+    let v := freshLevelName lparams
+    let lparams' := v::lparams
     let us := lparams.map .param
-    let recType ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
+    let recType ← ReaderT.run (r := { env, lparams := .ofList lparams'}) do
       -- 1. Parameters
       let recType ← openForall numParams indType fun _indType => do
         -- 2. Motive
@@ -410,8 +419,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           let idxs := (Array.range numIndices).reverse.map .bvar
           let majorType := (Expr.const indName us).appN idxs
           openType majorType do
-            -- TODO: Eliminate into more than just Prop
-            mkForall (numIndices + 1) (.sort .zero)
+            mkForall (numIndices + 1) (.sort (.param v))
         openType motiveType do
           -- 3. Minors
           let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
@@ -443,6 +451,6 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
         checkType recType
       pure recType
     let recName := indName.str "rec"
-    env := { env with consts := env.consts.insert recName (.opaque lparams recType) }
+    env := { env with consts := env.consts.insert recName (.opaque lparams' recType) }
 
     pure env
