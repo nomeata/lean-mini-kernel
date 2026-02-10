@@ -15,19 +15,19 @@ def Expr.shift (e : Expr) (n : Nat := 0) (d : Nat := 1) : Expr := match e with
   | .proj name idx e => .proj name idx (e.shift n d)
   | .const .. | .sort .. | .natLit .. | .strLit .. => e
 
-def Expr.subst (e : Expr) (n : Nat := 0) (s : Expr) : Expr := match e with
+def Expr.subst (e : Expr) (s : Expr) (n : Nat := 0) : Expr := match e with
   | Expr.bvar idx =>
     if idx = n then s
     else if idx > n then Expr.bvar (idx - 1)
     else e
   | .const name levels =>
     .const name levels
-  | .app f a => .app (f.subst n s) (a.subst n s)
-  | .lam name type body => .lam name (type.subst n s) (body.subst (n + 1) s.shift)
-  | .forall name type body => .forall name (type.subst n s) (body.subst (n + 1) s.shift)
+  | .app f a => .app (f.subst s n) (a.subst s n)
+  | .lam name type body => .lam name (type.subst s n) (body.subst s.shift (n + 1))
+  | .forall name type body => .forall name (type.subst s n) (body.subst  s.shift (n + 1))
   | .let name type value body =>
-    .let name (type.subst n s) (value.subst n s) (body.subst (n + 1) s.shift)
-  | .proj name idx e => .proj name idx (e.subst n s)
+    .let name (type.subst s n) (value.subst s n) (body.subst s.shift (n + 1))
+  | .proj name idx e => .proj name idx (e.subst s n)
   | .sort .. | .natLit .. | .strLit .. => e
 
 structure LEnv where
@@ -122,7 +122,7 @@ partial def whnf : Expr → LEnvM Expr
   | .app f a => do
     let f' ← whnf f
     match f' with
-    | .lam _ _ body => whnf (body.subst 0 a)
+    | .lam _ _ body => whnf (body.subst a)
     | _ =>
       return .app f' a
   | e => return e  -- Very naive implementation: no reduction
@@ -147,7 +147,7 @@ partial def inferType : Expr → LEnvM Expr
     | .forall _ type body => do
       let argType ← inferType arg
       assertIsDefEq type argType
-      return body.subst 0 arg
+      return body.subst arg
     | _ => throw s!"Expected a function type in application of {pp f} to {pp arg}, got {pp fType}"
   | .forall _ type body => do
     let s1 ← inferType type
@@ -161,6 +161,13 @@ partial def inferType : Expr → LEnvM Expr
     assertIsSort s1
     let t2 ← openType type <| inferType body
     return .forall name type t2
+  | .let _name type value body => do
+    let s1 ← inferType type
+    assertIsSort s1
+    let valueType ← inferType value
+    assertIsDefEq type valueType
+    let body' := body.subst value
+    inferType body'
   | e => throw <| "Type inference not yet implemented:\n" ++ pp e
 
 def checkType (e : Expr) : LEnvM Unit := do
@@ -238,6 +245,14 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   | .app f1 a1, .app f2 a2 =>
     assertIsDefEq f1 f2
     assertIsDefEq a1 a2
+  | .const n1 ls1, .const n2 ls2 =>
+    unless n1 == n2 do
+      throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
+    unless ls1.length == ls2.length do
+      throw s!"Mismatched level parameter list when checking {pp e1} =?= {pp e2}"
+    appendError (fun _ => s!"… while checking level parameters of {pp e1} =?= {pp e2}") do
+      for (l1, l2) in List.zip ls1 ls2 do
+        assertLevelEq l1 l2
   | e1, e2 =>
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
 
