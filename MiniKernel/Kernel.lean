@@ -350,14 +350,14 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp indName}" -- TODO: Write test
     let numCtors := ctors.size
-    let numIndices ←
+    let (numIndices, indLevel) ←
       ReaderT.run (r := { env, lparams := .ofList lparams}) do
         appendError (fun _ => s!"… while checking type of inductive {pp indName}") do
           checkType indType
           openForall numParams indType fun indType =>
             openForallEager indType fun numIndices indType => do
-              assertIsSort indType
-              return numIndices
+              let u ← sort indType
+              return (numIndices, u)
 
     env := { env with consts := env.consts.insert indName (.opaque lparams indType) }
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
@@ -407,9 +407,38 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       env := { env with consts := env.consts.insert ctorName (.opaque lparams ctorType) }
 
     -- Now we can generate the recursors
+    let elimToSort ←  ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      if indLevel.isNotZero then
+        return true
+      -- TODO: mutual inductives should return false
+      if numCtors = 0 then
+        return true
+      if numCtors > 1 then
+        return false
+      let (_, ctorType) := ctors[0]!
+
+      let rec go (t : Expr) : LEnvM Bool := do
+        match t with
+        | .forall _ domain body =>
+          let s ← inferType domain
+          let u ← sort s
+          openType domain do
+            let appearsInType ← openForallEager body fun shift resType =>
+                return resType.getApp.2.contains (.bvar shift)
+            unless u matches .zero || appearsInType do
+              return false
+            go body
+        | _ => return true
+      go ctorType
+
+
     -- TODO: Eliminate not always into sort
-    let v := freshLevelName lparams
-    let lparams' := v::lparams
+    let (motiveLevel, lparams') ← if elimToSort then
+      let v := freshLevelName lparams
+      pure (.param v, v::lparams)
+    else
+      pure (.zero, lparams)
+    do
     let us := lparams.map .param
     let recType ← ReaderT.run (r := { env, lparams := .ofList lparams'}) do
       -- 1. Parameters
@@ -420,7 +449,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           let idxs := Expr.bvars numIndices
           let majorType := (Expr.const indName us).appN (params ++ idxs)
           openType majorType do
-            mkForall (numIndices + 1) (.sort (.param v))
+            mkForall (numIndices + 1) (.sort motiveLevel)
         openType motiveType do
           -- 3. Minors
           let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
