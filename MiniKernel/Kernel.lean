@@ -411,7 +411,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       env := { env with consts := env.consts.insert ctorName (.opaque lparams ctorType) }
 
     -- Now we can generate the recursors
-    let elimToSort ←  ReaderT.run (r := { env, lparams := .ofList lparams}) do
+    let elimToSort ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
       if indLevel.isNotZero then
         return true
       -- TODO: mutual inductives should return false
