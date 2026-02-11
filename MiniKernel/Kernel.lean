@@ -347,7 +347,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
   | .inductive indName lparams numParams indType ctors => do
     let mut env := env
     unless lparams.Nodup do
-      throw s!"Duplicate level parameters in declaration of {pp indName}" -- TODO: Write test
+      throw s!"Duplicate level parameters in declaration of {pp indName}"
     let numCtors := ctors.size
     let (numIndices, indLevel) ←
       ReaderT.run (r := { env, lparams := .ofList lparams}) do
@@ -383,11 +383,16 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
               throw s!"Unexpected recursive occurrence of {pp indName} in index argument {i+1} of {pp type}"
 
         let rec checkCtorParam shift argIdx ctorParam := do
-          let ctorParam ← whnf ctorParam
-          if (hasConst indName ctorParam) then
-            appendError (fun _ => s!"… while checking argument {argIdx} of {pp ctorName}") do
+          appendError (fun _ => s!"… while checking argument {argIdx} of {pp ctorName}") do
+            let s ← inferType ctorParam
+            let u ← sort s
+            unless indLevel matches .zero do
+              assertLevelLe u indLevel
+            let ctorParam ← whnf ctorParam
+            if (hasConst indName ctorParam) then
               -- TODO: Reflexive occurrences
               isValidIndApp shift ctorParam
+
 
         let rec checkCtorType shift argIdx ctorType := do
           -- NB: We do **not** whnf here (the official kernel does not)
