@@ -201,7 +201,6 @@ partial def Level.simplify : Level → Level
   | .param n => .param n
 
 -- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
--- TOODO: Params
 mutual
 partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
   match l1, l2 with
