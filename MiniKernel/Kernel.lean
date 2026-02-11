@@ -26,10 +26,10 @@ def Expr.subst (e : Expr) (s : Expr) (n : Nat := 0) : Expr := match e with
   | .const name levels =>
     .const name levels
   | .app f a => .app (f.subst s n) (a.subst s n)
-  | .lam name type body => .lam name (type.subst s n) (body.subst s.shift (n + 1))
-  | .forall name type body => .forall name (type.subst s n) (body.subst  s.shift (n + 1))
+  | .lam name type body => .lam name (type.subst s n) (body.subst s.shift (n := n + 1))
+  | .forall name type body => .forall name (type.subst s n) (body.subst  s.shift (n := n + 1))
   | .let name type value body =>
-    .let name (type.subst s n) (value.subst s n) (body.subst s.shift (n + 1))
+    .let name (type.subst s n) (value.subst s n) (body.subst s.shift (n := n + 1))
   | .proj name idx e => .proj name idx (e.subst s n)
   | .sort .. | .natLit .. | .strLit .. => e
 
@@ -87,8 +87,16 @@ def assertIsSort (e : Expr) : LEnvM Unit := discard <| sort e
 def openType (type : Expr) : LEnvM α → LEnvM α :=
   withReader (fun lenv => { lenv with lenv := type :: lenv.lenv })
 
+/-- Adds the (non-dependent) types to the local context -/
 def openTypes (types : Array Expr) : LEnvM α → LEnvM α :=
+  let types := types.mapIdx fun i type => type.shift (d := i)
   withReader (fun lenv => { lenv with lenv := types.reverse.toList ++ lenv.lenv })
+
+def readLocalTypes (n : Nat) : LEnvM (Array Expr) := do
+  let lenv := (← read).lenv
+  if lenv.length < n then
+    throw s!"Expected at least {n} local variables, got {lenv.length}"
+  return lenv.take n |>.mapIdx (fun i t => t.shift (d := i + 1)) |>.reverse |>.toArray
 
 def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   match cinfo with
@@ -133,11 +141,14 @@ partial def whnf : Expr → LEnvM Expr
       return .app f' a
   | e => return e  -- Very naive implementation: no reduction
 
+def getLocalType (idx : Nat) : LEnvM Expr := do
+  let some t := (← read).lenv[idx]?
+    |  throw s!"deBruijn index #{idx} out of bounds"
+  return t.shift (d := idx + 1)
+
 partial def inferType : Expr → LEnvM Expr
   | .bvar idx => do
-    let some t := (← read).lenv[idx]?
-      |  throw s!"deBruijn index #{idx} out of bounds"
-    return t.shift (d := idx + 1)
+    getLocalType idx
   | .const name levels => do
     let some cinfo := (← read).env.consts[name]?
       | throw s!"Unknown constant {pp name}"
@@ -203,18 +214,19 @@ partial def Level.simplify : Level → Level
 -- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
 mutual
 partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
-  match l1, l2 with
-  | .succ l1', l2 => Level.le l1' l2 (balance - 1)
-  | l1, .succ l2' => Level.le l1 l2' (balance + 1)
-  | .max l1a l1b, l2 =>
+  match l1, l2, decide (0 ≤ balance) with
+  | .succ l1', l2, _ => Level.le l1' l2 (balance - 1)
+  | l1, .succ l2', _ => Level.le l1 l2' (balance + 1)
+  | .max l1a l1b, l2, _ =>
     Level.le l1a l2 balance <&&> Level.le l1b l2 balance
-  | l1, .max l2a l2b =>
+  | l1, .max l2a l2b,_  =>
     Level.le l1 l2a balance <||> Level.le l1 l2b balance
-  | .zero, .zero => if balance >= 0 then return true else return false
-  | .param n, .param m => return n == m && balance >= 0
-  | .imax _ (.param p), _ | _, .imax _ (.param p) =>
+  | .param n, .param m, _ => return n == m && balance >= 0
+  | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
     cases p l1 l2
-  | l1, l2 => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2}"
+  | .zero, _, true => return true
+  | _, .zero, false => return false
+  | l1, l2, _ => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2}"
 
 partial def cases (p : Name) (l1 l2 : Level) : LEnvM Bool := do
   (← l1.substOneLevel p Level.zero).simplify.le (← l2.substOneLevel p Level.zero).simplify
@@ -454,17 +466,32 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             mkForall (numIndices + 1) (.sort motiveLevel)
         openType motiveType do
           -- 3. Minors
-          let minorTypes ← ctors.mapIdxM fun idx (ctorName, ctorType) => do
-            let params := Expr.bvars numParams (idx + 1)
+          let minorTypes ← ctors.mapM fun (ctorName, ctorType) => do
+            let params := Expr.bvars numParams 1
             let ctorType ← instantiateForalls ctorType params
-            openForallEager ctorType fun numFields ctorType => do
-              let params := params.map (·.shift (d := numFields))
-              let fields := Expr.bvars numFields
-              let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
-              let idxs := ctorType.getApp.2[numParams:numParams+numIndices]
-              let motive := Expr.bvar (idx + numFields)
-              let motiveApp := motive.appN (idxs ++ #[ctorApp])
-              mkForall numFields motiveApp
+            openForallEager ctorType fun numFields ctorResType => do
+              -- Look at the type of the fields, find recursive ones, and
+              -- calculate the inductive hypothesis from these
+              let hypTypes ← (Expr.bvars numFields).filterMapM fun field => do
+                let t ← inferType field
+                let t ← whnf t
+                if hasConst indName t then
+                  -- TODO: reflexive occurrences
+                  let idxs := t.getApp.2[numParams:numParams+numIndices]
+                  let motive := Expr.bvar numFields
+                  let hypType := motive.appN (idxs ++ #[field])
+                  pure (some hypType)
+                else
+                  pure none
+              openTypes hypTypes do
+                let ctorResType := ctorResType.shift (d := hypTypes.size)
+                let params := params.map (·.shift (d := numFields + hypTypes.size))
+                let fields := Expr.bvars numFields hypTypes.size
+                let ctorApp := (Expr.const ctorName us).appN (params ++ fields)
+                let idxs := ctorResType.getApp.2[numParams:numParams+numIndices]
+                let motive := Expr.bvar (numFields + hypTypes.size)
+                let motiveApp := motive.appN (idxs ++ #[ctorApp])
+                mkForall (numFields + hypTypes.size) motiveApp
           openTypes minorTypes do
             -- 4. Indices
             openForall numIndices (indType.shift (d := 1 + numCtors)) fun _ => do
