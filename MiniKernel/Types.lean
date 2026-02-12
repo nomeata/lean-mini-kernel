@@ -4,7 +4,7 @@ inductive Name where
   | anonymous : Name
   | str (pre : Name) (str : String)
   | num (pre : Name) (i : Nat)
-deriving BEq, Hashable, DecidableEq, Inhabited
+deriving BEq, ReflBEq, LawfulBEq, Hashable, DecidableEq, Inhabited
 
 inductive Level
   | zero : Level

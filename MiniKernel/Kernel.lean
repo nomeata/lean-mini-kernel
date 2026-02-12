@@ -235,13 +235,60 @@ def Level.simplify : Level → Level
   | .imax l1 l2 => .mkIMax l1.simplify l2.simplify
   | .param n => .param n
 
+/--
+Restricted simplification; only eliminates IMax, but does not duplicate terms.
+(Necessary to prove well-foundedness of the `le` implications)
+-/
+def Level.elimIMax : Level → Level
+  | .zero => .zero
+  | .succ l => .succ l.elimIMax
+  | .max l1 l2 => .max l1.elimIMax l2.elimIMax
+  | .imax _ .zero => .zero
+  | .imax l1 (.succ l2) => .max l1.elimIMax (.succ l2.elimIMax)
+  | .imax l1 l2 => .imax l1.elimIMax l2.elimIMax
+  | .param n => .param n
+
 def Level.byCases (p : Name) (l1 l2 : Level) (k : (l1 l2 : Level) → Bool) : Bool :=
-  k (l1.substOneLevel p Level.zero).simplify (l2.substOneLevel p Level.zero).simplify &&
-  k (l1.substOneLevel p (Level.param p).succ).simplify (l2.substOneLevel p (Level.param p).succ).simplify
+  k (l1.substOneLevel p Level.zero).elimIMax (l2.substOneLevel p Level.zero).elimIMax &&
+  k (l1.substOneLevel p (Level.param p).succ).elimIMax (l2.substOneLevel p (Level.param p).succ).elimIMax
+
+def Level.countIMax : Level → Nat
+  | .zero => 0
+  | .succ l => l.countIMax
+  | .max l1 l2 => l1.countIMax + l2.countIMax
+  | .imax l1 l2 => l1.countIMax + l2.countIMax + 1
+  | .param _ => 0
+
+theorem Level.countIMax_elimIMax (l : Level) : l.elimIMax.countIMax ≤ l.countIMax := by
+  fun_induction Level.elimIMax <;> grind [countIMax]
+grind_pattern Level.countIMax_elimIMax => l.elimIMax.countIMax
+
+theorem Level.countIMax_substOneLevel (l1 l2 : Level) (h : l2.countIMax = 0) :
+  (l1.substOneLevel p l2).countIMax ≤ l1.countIMax := by
+  unfold substOneLevel
+  fun_induction substLevel <;> grind [countIMax]
+grind_pattern Level.countIMax_substOneLevel => (l1.substOneLevel p l2).countIMax
+
+@[simp, grind =] theorem Level.substOneLevel_imax (l1 l2 l3 : Level) :
+  (l1.imax l2).substOneLevel p l3 = .imax (l1.substOneLevel p l3) (l2.substOneLevel p l3) := rfl
+@[simp, grind =] theorem Level.substOneLevel_param_self : (param p).substOneLevel p  l = l := by
+  simp [substOneLevel, substLevel]
+
+def Level.byCases' (p : Name) (l1 l2 : Level)
+  (k : (l1' l2' : Level) →
+    ((∃ l, l1 = .imax l (.param p) ∨ l2 = .imax l (.param p)) → l1'.countIMax + l2'.countIMax < l1.countIMax + l2.countIMax) → Bool) : Bool :=
+  k (l1.substOneLevel p Level.zero).elimIMax (l2.substOneLevel p Level.zero).elimIMax ?p1 &&
+  k (l1.substOneLevel p (Level.param p).succ).elimIMax (l2.substOneLevel p (Level.param p).succ).elimIMax ?p2
+where finally
+  · grind [elimIMax, countIMax]
+  · grind [elimIMax, countIMax]
+
+@[wf_preprocess] theorem Level.byCases_eq_byCases' :
+  Level.byCases p l1 l2 k = Level.byCases' p l1 l2 (fun l1' l2' _h => k l1' l2') := rfl
 
 -- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
-partial def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
-  match l1, l2, decide (0 ≤ balance) with
+def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
+  match _ : l1, _ : l2, decide (0 ≤ balance) with
   | .succ l1', l2, _ => Level.le l1' l2 (balance - 1)
   | l1, .succ l2', _ => Level.le l1 l2' (balance + 1)
   | .max l1a l1b, l2, _ =>
@@ -250,12 +297,22 @@ partial def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
     Level.le l1 l2a balance || Level.le l1 l2b balance
   | .param n, .param m, _ => n == m && balance >= 0
   | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
-    Level.byCases p l1 l2 (fun l1 l2 => Level.le l1 l2 balance)
+    Level.byCases p l1 l2 (fun l1' l2' => Level.le l1' l2' balance)
   | .imax _ _, _, _ | _, .imax _ _, _  => false -- unreachable by the simplification invariant
   | .zero, _, true => true
   | .zero, .param _, false => false
   | _, .zero, false => false
   | .param _, .zero, _ => false
+termination_by (l1.countIMax + l2.countIMax, sizeOf l1 + sizeOf l2)
+decreasing_by
+  all_goals try solve
+    | apply Prod.Lex.right'
+      · grind [countIMax]
+      · grind [Level.succ.sizeOf_spec, Level.max.sizeOf_spec]
+    | apply Prod.Lex.left
+      subst l1 l2
+      grind [countIMax]
+
 
 def assertLevelLe (l1 l2 : Level) : LEnvM Unit :=
   unless (l1.simplify.le l2.simplify) do
