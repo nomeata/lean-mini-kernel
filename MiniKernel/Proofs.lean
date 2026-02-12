@@ -8,6 +8,68 @@ def Level.eval (l : Level) (ctx : Name → Nat) : Nat :=
   | .imax l1 l2 => if (l2.eval ctx) = 0 then 0 else Nat.max (l1.eval ctx) (l2.eval ctx)
   | .param n => ctx n
 
+theorem Level.eval_mono (ctx1 ctx2 : Name → Nat) (l : Level)
+  (hmono : ∀ n, ctx1 n ≤ ctx2 n) : l.eval ctx1 ≤ l.eval ctx2 := by
+  fun_induction Level.eval l ctx1 <;> grind [eval]
+
+theorem Level.forall_zero_le_eval (balance : Int) (l : Level) :
+  (∀ ctx, 0 ≤ l.eval ctx + balance) ↔ 0 ≤ l.eval (fun _ => 0) + balance:= by
+  constructor
+  · intro h; apply h
+  · intro h0 ctx
+    have := Level.eval_mono (fun _ => 0) ctx l (by grind)
+    grind
+
+def Level.dependsOn (l : Level) (p : Name) : Prop :=
+  match l with
+  | .zero => False
+  | .succ l' => dependsOn l' p
+  | .max l1 l2 => dependsOn l1 p ∨ dependsOn l2 p
+  | .imax l1 l2 => dependsOn l1 p ∨ dependsOn l2 p
+  | .param n => n = p
+
+/-
+theorem Level.param_le_eval_step (balance : Int) (l : Level) (p : Name)
+  (hd : l.dependsOn p)
+  (h1 : 1 ≤ l.eval (fun p' => if p' = p then 1 else 0) + balance) :
+  (∀ n, n + 1 ≤ l.eval (fun p' => if p' = p then n + 1 else 0) + balance) := by
+  intro n
+  induction l generalizing balance <;> simp [eval, dependsOn] at *
+  case succ ih =>
+    specialize ih (balance + 1) hd
+    grind
+  case max ih1 ih2 =>
+    simp [Int.le_max] at h1
+    cases hd
+    · specialize ih1 balance ‹_›
+
+      grind
+    · specialize ih2 balance ‹_›
+      grind
+
+
+
+theorem Level.forall_param_le_eval (balance : Int) (l : Level) (p : Name) :
+  (∀ ctx, ctx p ≤ l.eval ctx + balance) ↔
+    (0 ≤ l.eval (fun _ => 0) + balance ∧ 1 ≤ l.eval (fun n => if n = p then 1 else 0) + balance)
+    := by
+  constructor
+  · intro h; constructor
+    · apply h
+    · specialize h (fun n => if n = p then 1 else 0)
+      grind
+  · intro ⟨h0, h1⟩ ctx
+    match h : ctx p with
+    | 0 =>
+      have := Level.eval_mono (fun _ => 0) ctx l (by grind)
+      simp_all
+      grind
+    | n+1 =>
+      have := Level.eval_mono (fun n' => if n' = p then 1 else 0) ctx l (by grind)
+      simp_all
+      grind
+-/
+
 @[grind] inductive Level.NF : Level → Prop
   | zero : Level.NF .zero
   | succ : Level.NF l → Level.NF (.succ l)
@@ -134,12 +196,13 @@ theorem Level.le_complete (ctx : Name → Nat) (l1 l2 : Level) (balance : Int) :
     sorry
   case case9 => -- param le max
     simp only [Bool.or_eq_true]
-    simp [eval] at *
+    simp [eval.eq_5] at *
+    -- simp [eval] at *
     sorry
   case case10 => -- zero le max
     simp only [Bool.or_eq_true]
-    simp [eval] at *
-    sorry
+    simp [eval.eq_1, Level.forall_zero_le_eval] at *
+    grind [eval.eq_3]
   case case12 =>
     simp_all [eval]
     specialize hle (fun _ => 0)
