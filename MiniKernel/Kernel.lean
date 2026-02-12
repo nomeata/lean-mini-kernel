@@ -59,30 +59,30 @@ def appendError {α} (msg : Unit → String) (action : LEnvM α) : LEnvM α := d
   | .ok a => return a
   | .error e => throw (e ++ "\n" ++ msg ())
 
-def Level.substLevel (l : Level) (f : Name → LEnvM Level) : LEnvM Level :=
+def Level.substLevel (l : Level) (f : Name → Level) : Level :=
   match l with
   | .param n => f n
-  | .zero => return .zero
-  | .succ l' => return .succ (← l'.substLevel f)
-  | .max l1 l2 => return .max (← l1.substLevel f) (← l2.substLevel f)
-  | .imax l1 l2 => return .imax (← l1.substLevel f) (← l2.substLevel f)
+  | .zero => .zero
+  | .succ l' => .succ (l'.substLevel f)
+  | .max l1 l2 => .max (l1.substLevel f) (l2.substLevel f)
+  | .imax l1 l2 => .imax (l1.substLevel f) (l2.substLevel f)
 
-def Level.substOneLevel (l : Level) (n : Name) (l' : Level) : LEnvM Level :=
-  l.substLevel fun m => if m == n then return l' else return .param m
+def Level.substOneLevel (l : Level) (n : Name) (l' : Level) : Level :=
+  l.substLevel fun m => if m == n then l' else .param m
 
-def Expr.substLevel (e : Expr) (f : Name → LEnvM Level) : LEnvM Expr := match e with
-  | .const name levels => return .const name (← levels.mapM (·.substLevel f))
-  | .app fn a => return .app (← fn.substLevel f) (← a.substLevel f)
+def Expr.substLevel (e : Expr) (f : Name → Level) : Expr := match e with
+  | .const name levels => .const name (levels.map (·.substLevel f))
+  | .app fn a => .app (fn.substLevel f) (a.substLevel f)
   | .lam name type body =>
-    return .lam name (← type.substLevel f) (← body.substLevel f)
+    .lam name (type.substLevel f) (body.substLevel f)
   | .forall name type body =>
-    return .forall name (← type.substLevel f) (← body.substLevel f)
+    .forall name (type.substLevel f) (body.substLevel f)
   | .let name type value body =>
-    return .let name (← type.substLevel f) (← value.substLevel f) (← body.substLevel f)
+    .let name (type.substLevel f) (value.substLevel f) (body.substLevel f)
   | .proj name idx e =>
-    return .proj name idx (← e.substLevel f)
-  | .sort l => return .sort (← l.substLevel f)
-  | .bvar .. | .natLit .. | .strLit .. => return e
+    .proj name idx (e.substLevel f)
+  | .sort l => .sort (l.substLevel f)
+  | .bvar .. | .natLit .. | .strLit .. => e
 
 def sort (e : Expr) : LEnvM Level :=
   match e with
@@ -130,10 +130,10 @@ opaque assertIsDefEq (e1 e2 : Expr) : LEnvM Unit
 def Expr.instantiateLParams (e : Expr) (lparams : List Name) (levels : List Level) : LEnvM Expr := do
   unless levels.length = lparams.length do
     throw s!"Expected {lparams.length} levels, got {levels.length}"
-  e.substLevel fun n =>
+  return e.substLevel fun n =>
     match lparams.idxOf? n with
-    | some idx => return levels[idx]!
-    | none => throw s!"Level parameter {PP.pp n} not found"
+    | some idx => levels[idx]!
+    | none => .param n -- should not happen
 
 partial def whnf (e : Expr) : LEnvM Expr :=
   go e []
@@ -230,42 +230,42 @@ Simplification ensures the invariant that the rhs of an `imax` is always a param
 -/
 partial def Level.simplify : Level → Level
   | .zero => .zero
-  | .succ l => .succ (l.simplify)
-  | .max l1 l2 => .max (l1.simplify) (l2.simplify)
-  | .imax l1 l2 => .mkIMax (l1.simplify) (l2.simplify)
+  | .succ l => .succ l.simplify
+  | .max l1 l2 => .max l1.simplify l2.simplify
+  | .imax l1 l2 => .mkIMax l1.simplify l2.simplify
   | .param n => .param n
 
 -- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
 mutual
-partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
+partial def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
   match l1, l2, decide (0 ≤ balance) with
   | .succ l1', l2, _ => Level.le l1' l2 (balance - 1)
   | l1, .succ l2', _ => Level.le l1 l2' (balance + 1)
   | .max l1a l1b, l2, _ =>
-    Level.le l1a l2 balance <&&> Level.le l1b l2 balance
+    Level.le l1a l2 balance && Level.le l1b l2 balance
   | l1, .max l2a l2b,_  =>
-    Level.le l1 l2a balance <||> Level.le l1 l2b balance
-  | .param n, .param m, _ => return n == m && balance >= 0
+    Level.le l1 l2a balance || Level.le l1 l2b balance
+  | .param n, .param m, _ => n == m && balance >= 0
   | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
     cases p l1 l2
-  | .zero, _, true => return true
-  | .zero, .param _, false => return false
-  | _, .zero, false => return false
-  | .param _, .zero, _ => return false
-  | l1, l2, _ => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2} (with balance = {balance})"
+  | .imax _ _, _, _ | _, .imax _ _, _  => false -- unreachable by the simplification invariant
+  | .zero, _, true => true
+  | .zero, .param _, false => false
+  | _, .zero, false => false
+  | .param _, .zero, _ => false
 
-partial def cases (p : Name) (l1 l2 : Level) : LEnvM Bool := do
-  (← l1.substOneLevel p Level.zero).simplify.le (← l2.substOneLevel p Level.zero).simplify
-    <&&>
-  (← l1.substOneLevel p (Level.param p).succ).simplify.le (← l2.substOneLevel p (Level.param p).succ).simplify
+partial def cases (p : Name) (l1 l2 : Level) : Bool :=
+  (l1.substOneLevel p Level.zero).simplify.le (l2.substOneLevel p Level.zero).simplify
+    &&
+  (l1.substOneLevel p (Level.param p).succ).simplify.le (l2.substOneLevel p (Level.param p).succ).simplify
 end
 
 def assertLevelLe (l1 l2 : Level) : LEnvM Unit :=
-  unless (← l1.simplify.le l2.simplify) do
+  unless (l1.simplify.le l2.simplify) do
     throw s!"Expected level inequality does not hold: {pp l1} ≤ {pp l2}"
 
 def assertLevelEq (l1 l2 : Level) : LEnvM Unit :=
-  unless (← l1.simplify.le l2.simplify) && (← l2.simplify.le l1.simplify) do
+  unless (l1.simplify.le l2.simplify) && (l2.simplify.le l1.simplify) do
     throw s!"Expected level equality does not hold: {pp l1} = {pp l2}"
 
 @[export assertIsDefEq]
