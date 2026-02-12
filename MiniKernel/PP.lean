@@ -6,6 +6,9 @@ class PP (α : Type) where
 
 export PP (pp)
 
+instance [PP α] : PP (Array α) where
+  pp arr := "[" ++ String.intercalate ", " (arr.toList.map pp) ++ "]"
+
 def Name.pp : Name → String
   | .anonymous => "``_"
   | .str .anonymous s => s!"``{s}"

@@ -55,7 +55,16 @@ inductive ConstantInfo
   | «opaque» : (levelParams : List Name) → (type : Expr) → ConstantInfo
   /-- Any kind of transparent definition (def, theorem) -/
   | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → ConstantInfo
-  /-- Used for the quotients and recursors -/
+  /--
+  A recursors. The rules list the supported constructors, and the RHS
+  is an open expression that's the body of a lambda
+  `fun params motive minors fields => …`.
+  -/
+  | «recursor» : (levelParams : List Name) → (type : Expr) →
+    (numParams numMinors numIndices : Nat) →
+    (rules : Array (Name × Expr)) →
+    ConstantInfo
+  /-- Used for quotients (maybe) -/
   | special : (levelParams : List Name) → (type : Expr) → ConstantInfo
 
 structure Environment where

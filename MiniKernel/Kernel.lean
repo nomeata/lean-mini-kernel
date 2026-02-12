@@ -18,20 +18,27 @@ def Expr.shift (e : Expr) (n : Nat := 0) (d : Nat := 1) : Expr := match e with
   | .proj name idx e => .proj name idx (e.shift n d)
   | .const .. | .sort .. | .natLit .. | .strLit .. => e
 
-def Expr.subst (e : Expr) (s : Expr) (n : Nat := 0) : Expr := match e with
+def Expr.substs (e : Expr) (s : Array Expr) (n : Nat := 0) : Expr := match e with
   | Expr.bvar idx =>
-    if idx = n then s
-    else if idx > n then Expr.bvar (idx - 1)
-    else e
+    if _ : idx >= n then
+      if _ : idx < n + s.size then
+        let s := s[s.size - (idx - n + 1)]
+        s.shift (d := n)
+      else
+        .bvar (idx - s.size)
+    else
+      e
   | .const name levels =>
     .const name levels
-  | .app f a => .app (f.subst s n) (a.subst s n)
-  | .lam name type body => .lam name (type.subst s n) (body.subst s.shift (n := n + 1))
-  | .forall name type body => .forall name (type.subst s n) (body.subst  s.shift (n := n + 1))
+  | .app f a => .app (f.substs s n) (a.substs s n)
+  | .lam name type body => .lam name (type.substs s n) (body.substs s (n := n + 1))
+  | .forall name type body => .forall name (type.substs s n) (body.substs  s (n := n + 1))
   | .let name type value body =>
-    .let name (type.subst s n) (value.subst s n) (body.subst s.shift (n := n + 1))
-  | .proj name idx e => .proj name idx (e.subst s n)
+    .let name (type.substs s n) (value.substs s n) (body.substs s (n := n + 1))
+  | .proj name idx e => .proj name idx (e.substs s n)
   | .sort .. | .natLit .. | .strLit .. => e
+
+def Expr.subst (e : Expr) (a : Expr) : Expr := e.substs #[a]
 
 structure LEnv where
   env : Environment
@@ -102,19 +109,20 @@ def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   match cinfo with
   | .opaque _ type => type
   | .def _ type _ => type
+  | .recursor _ type _ _ _ _ => type
   | .special _ type => type
 
 def ConstantInfo.lparams (cinfo : ConstantInfo) : List Name  :=
   match cinfo with
   | .opaque lparams _ => lparams
   | .def lparams _ _ => lparams
+  | .recursor lparams _ _ _ _ _ => lparams
   | .special lparams _ => lparams
 
 def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
   match cinfo with
-  | .opaque _ _ => none
   | .def _ _ value => some value
-  | .special _ _ => none
+  | _ => none
 
 @[extern "assertIsDefEq"]
 opaque assertIsDefEq (e1 e2 : Expr) : LEnvM Unit
@@ -127,19 +135,35 @@ def Expr.instantiateLParams (e : Expr) (lparams : List Name) (levels : List Leve
     | some idx => return levels[idx]!
     | none => throw s!"Level parameter {PP.pp n} not found"
 
-partial def whnf : Expr → LEnvM Expr
-  | e@(.const name levels) => do
+partial def whnf (e : Expr) : LEnvM Expr :=
+  go e []
+where
+  go : Expr → List Expr → LEnvM Expr
+  | e@(.const name levels), stack => do
     let some cinfo := (← read).env.consts[name]?  | throw s!"Unknown constant {pp name}"
-    let some value := cinfo.value?  | return e
-    let value ← value.instantiateLParams cinfo.lparams levels
-    whnf value
-  | .app f a => do
-    let f' ← whnf f
-    match f' with
-    | .lam _ _ body => whnf (body.subst a)
-    | _ =>
-      return .app f' a
-  | e => return e  -- Very naive implementation: no reduction
+    if let some value := cinfo.value? then
+      let value ← value.instantiateLParams cinfo.lparams levels
+      return ← go value stack
+    if let .recursor _ _ numParams numMinors numIndices rules := cinfo then
+      let majorPos := numParams + 1 + numMinors + numIndices
+      if let some major := stack[majorPos]? then
+        let major' ← whnf major
+        if let (.const f _, conArgs) := major.getApp then
+          if let some (_, rhs) := rules.find? (fun (ctorName, _) => ctorName == f) then
+            let fields := conArgs[numParams:]
+            let args := stack.toArray[:numParams + 1 + numMinors] ++ fields |>.toArray
+            let rhs ← rhs.instantiateLParams cinfo.lparams levels
+            let rhs := rhs.substs args
+            return ← go rhs (stack.drop (majorPos + 1))
+        let stack' := stack.set majorPos major'
+        return e.appN stack'.toArray
+    return e.appN stack.toArray
+  | .app f a, stack => do
+    go f (a :: stack)
+  | .lam _ _ body, a::stack =>
+    go (body.subst a) stack
+  | e, stack =>
+    return e.appN stack.toArray  -- Very naive implementation: no reduction
 
 def getLocalType (idx : Nat) : LEnvM Expr := do
   let some t := (← read).lenv[idx]?
@@ -225,8 +249,10 @@ partial def Level.le (l1 l2 : Level) (balance : Int := 0) : LEnvM Bool :=
   | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
     cases p l1 l2
   | .zero, _, true => return true
+  | .zero, .param _, false => return false
   | _, .zero, false => return false
-  | l1, l2, _ => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2}"
+  | .param _, .zero, _ => return false
+  | l1, l2, _ => throw s!"Level.le not implemented for {pp l1} ≤ {pp l2} (with balance = {balance})"
 
 partial def cases (p : Name) (l1 l2 : Level) : LEnvM Bool := do
   (← l1.substOneLevel p Level.zero).simplify.le (← l2.substOneLevel p Level.zero).simplify
@@ -247,6 +273,7 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
   let e1 ← whnf e1
   let e2 ← whnf e2
+  appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
   match e1, e2 with
   | .sort l1, .sort l2 =>
     assertLevelEq l1 l2
@@ -510,7 +537,19 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       appendError (fun _ => s!"… while checking type of recursor for {pp indName}:\n{pp recType}") do
         checkType recType
       pure recType
+
+    let rules ← ctors.mapIdxM fun i (ctorName, ctorType) => do
+      ReaderT.run (r := { env, lparams := .ofList lparams'}) do
+        openForall (numParams + 1 + numCtors) recType fun _recType => do
+          let ctorType ← instantiateForalls ctorType (Expr.bvars numParams (1 + numCtors))
+          openForallEager ctorType fun numFields _ => do
+            let minor  := Expr.bvar (numCtors - (i + 1) + numFields)
+            let fields := Expr.bvars numFields
+            let rhs := minor.appN fields
+            return (ctorName, rhs)
+
     let recName := indName.str "rec"
-    env := { env with consts := env.consts.insert recName (.opaque lparams' recType) }
+    let recInfo := ConstantInfo.recursor lparams' recType numParams numCtors numIndices rules
+    env := { env with consts := env.consts.insert recName recInfo }
 
     pure env
