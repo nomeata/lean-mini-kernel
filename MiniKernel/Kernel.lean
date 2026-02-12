@@ -209,6 +209,8 @@ partial def inferType : Expr → LEnvM Expr
     assertIsDefEq type valueType
     let body' := body.subst value
     inferType body'
+  | e@(.proj ..) =>
+    throw <| "Type inference not yet implemented on projections\n" ++ pp e
   | e => throw <| "Type inference not yet implemented:\n" ++ pp e
 
 def checkType (e : Expr) : LEnvM Unit := do
@@ -535,6 +537,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     else
       pure (.zero, lparams)
     let us := lparams.map .param
+    let us' := lparams'.map .param
     let recType ← ReaderT.run (r := { env, lparams := .ofList lparams'}) do
       -- 1. Parameters
       let recType ← openForall numParams indType fun indType => do
@@ -592,6 +595,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
         checkType recType
       pure recType
 
+    let recName := indName.str "rec"
     let rules ← ctors.mapIdxM fun i (ctorName, ctorType) => do
       ReaderT.run (r := { env, lparams := .ofList lparams'}) do
         openForall (numParams + 1 + numCtors) recType fun _recType => do
@@ -599,10 +603,20 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           openForallEager ctorType fun numFields _ => do
             let minor  := Expr.bvar (numCtors - (i + 1) + numFields)
             let fields := Expr.bvars numFields
-            let rhs := minor.appN fields
+            let ihs ← fields.filterMapM fun field => do
+              let t ← inferType field
+              let t ← whnf t
+              if hasConst indName t then
+                -- TODO: reflexive occurrences
+                let idxs := t.getApp.2[numParams:numParams+numIndices]
+                let recApp := Expr.const recName us'
+                let ih := recApp.appN (Expr.bvars (numParams + 1 + numCtors) numFields ++ idxs ++ #[field])
+                pure (some ih)
+              else
+                pure none
+            let rhs := minor.appN (fields ++ ihs)
             return (ctorName, rhs)
 
-    let recName := indName.str "rec"
     let recInfo := ConstantInfo.recursor lparams' recType numParams numCtors numIndices rules
     env := { env with consts := env.consts.insert recName recInfo }
 
