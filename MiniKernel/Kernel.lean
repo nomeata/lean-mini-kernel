@@ -228,15 +228,18 @@ def Level.mkIMax (l1 l2 : Level) : Level :=
 /--
 Simplification ensures the invariant that the rhs of an `imax` is always a parameter.
 -/
-partial def Level.simplify : Level → Level
+def Level.simplify : Level → Level
   | .zero => .zero
   | .succ l => .succ l.simplify
   | .max l1 l2 => .max l1.simplify l2.simplify
   | .imax l1 l2 => .mkIMax l1.simplify l2.simplify
   | .param n => .param n
 
+def Level.byCases (p : Name) (l1 l2 : Level) (k : (l1 l2 : Level) → Bool) : Bool :=
+  k (l1.substOneLevel p Level.zero).simplify (l2.substOneLevel p Level.zero).simplify &&
+  k (l1.substOneLevel p (Level.param p).succ).simplify (l2.substOneLevel p (Level.param p).succ).simplify
+
 -- Implementation inspired by https://ammkrn.github.io/type_checking_in_lean4/levels.html
-mutual
 partial def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
   match l1, l2, decide (0 ≤ balance) with
   | .succ l1', l2, _ => Level.le l1' l2 (balance - 1)
@@ -247,18 +250,12 @@ partial def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
     Level.le l1 l2a balance || Level.le l1 l2b balance
   | .param n, .param m, _ => n == m && balance >= 0
   | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
-    cases p l1 l2
+    Level.byCases p l1 l2 (fun l1 l2 => Level.le l1 l2 balance)
   | .imax _ _, _, _ | _, .imax _ _, _  => false -- unreachable by the simplification invariant
   | .zero, _, true => true
   | .zero, .param _, false => false
   | _, .zero, false => false
   | .param _, .zero, _ => false
-
-partial def cases (p : Name) (l1 l2 : Level) : Bool :=
-  (l1.substOneLevel p Level.zero).simplify.le (l2.substOneLevel p Level.zero).simplify
-    &&
-  (l1.substOneLevel p (Level.param p).succ).simplify.le (l2.substOneLevel p (Level.param p).succ).simplify
-end
 
 def assertLevelLe (l1 l2 : Level) : LEnvM Unit :=
   unless (l1.simplify.le l2.simplify) do
