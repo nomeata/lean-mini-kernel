@@ -43,7 +43,7 @@ theorem Level.substOneLevel_eval (l1 l2 : Level) (h : l2.eval ctx = ctx p):
 
 theorem Level.le_correct (ctx : Name → Nat) (l1 l2 : Level) balance : l1.le l2 balance = true → l1.eval ctx ≤ l2.eval ctx + balance := by
   fun_induction Level.le l1 l2 balance generalizing ctx <;> try grind [Level.eval]
-  case case6 l2 balance l1 p _ _ ih =>
+  case case5 l2 balance l1 p _ ih =>
     match h : ctx p with
     | .zero =>
       unfold byCases
@@ -77,7 +77,7 @@ theorem Level.le_correct (ctx : Name → Nat) (l1 l2 : Level) balance : l1.le l2
       case h2 => grind
       simp [eval, h]
       assumption
-  case case7 l1 balance l2 p _ _ _ ih =>
+  case case6 l1 balance l2 p _ _ _ ih =>
     match h : ctx p with
     | .zero =>
       unfold byCases
@@ -112,15 +112,43 @@ theorem Level.le_correct (ctx : Name → Nat) (l1 l2 : Level) balance : l1.le l2
       simp [eval, h]
       assumption
 
-/-
--- I’m currently not sure if this is actually true, due to case 4 and `(∀, … ∨ …)`
 theorem Level.le_complete (ctx : Name → Nat) (l1 l2 : Level) (balance : Int) :
     (∀ ctx, l1.eval ctx ≤ l2.eval ctx + balance) → l1.le l2 balance = true := by
   intro hle
   fun_induction Level.le l1 l2 balance <;> try grind [Level.eval]
-  case case4 ih1 ih2 =>
-    simp only [Bool.or_eq_true]
-    simp [eval, Lean.Omega.Int.ofNat_max, ← Int.max_add_right] at hle
+  case case4 balance p1 p2 => -- param case
+    by_cases p2 = p1
+    · subst p2
+      specialize hle (fun _ => 0)
+      simp_all [eval]
+    · exfalso
+      specialize hle (fun p' => if p' = p1 then Int.natAbs balance + 1 else 0)
+      grind [eval]
+  case case5 => -- byCases case
     sorry
-  all_goals sorry
--/
+  case case6 => -- byCases case 2
+    sorry
+  case case7 => -- unreachable case due to NF
+    sorry
+  case case8 => -- unreachable case due to NF
+    sorry
+  case case9 => -- param le max
+    simp only [Bool.or_eq_true]
+    simp [eval] at *
+    sorry
+  case case10 => -- zero le max
+    simp only [Bool.or_eq_true]
+    simp [eval] at *
+    sorry
+  case case12 =>
+    simp_all [eval]
+    specialize hle (fun _ => 0)
+    grind
+  case case13 =>
+    simp_all [eval]
+    specialize hle (fun _ => 0)
+    grind
+  case case14 balance _ _ =>
+    simp_all [eval]
+    specialize hle (fun _ => Int.natAbs balance + 1)
+    grind

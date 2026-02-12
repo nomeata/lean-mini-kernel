@@ -295,12 +295,12 @@ def Level.le (l1 l2 : Level) (balance : Int := 0) : Bool :=
   | l1, .succ l2', _ => Level.le l1 l2' (balance + 1)
   | .max l1a l1b, l2, _ =>
     Level.le l1a l2 balance && Level.le l1b l2 balance
-  | l1, .max l2a l2b,_  =>
-    Level.le l1 l2a balance || Level.le l1 l2b balance
   | .param n, .param m, _ => n == m && balance >= 0
   | .imax _ (.param p), _, _ | _, .imax _ (.param p), _ =>
     Level.byCases p l1 l2 (fun l1' l2' => Level.le l1' l2' balance)
   | .imax _ _, _, _ | _, .imax _ _, _  => false -- unreachable by the simplification invariant
+  | param _, .max l2a l2b, _ | zero, .max l2a l2b, _  =>
+    Level.le l1 l2a balance || Level.le l1 l2b balance
   | .zero, _, true => true
   | .zero, .param _, false => false
   | _, .zero, false => false
