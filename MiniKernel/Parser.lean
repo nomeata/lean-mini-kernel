@@ -7,6 +7,7 @@ import Std
 import Std.Internal.Parsec.String
 import Lean.Data.Json.Parser
 import MiniKernel.Types
+import MiniKernel.PP
 
 namespace Export
 namespace Parse
@@ -21,11 +22,13 @@ structure State where
   exprMap : Std.HashMap Nat Expr := {}
   ctorMap : Std.HashMap Name Expr := {}
   decls : Array Declaration := #[]
+  /-- When `true`, ignore declarations with parse errors  -/
+  liberal : Bool := false
 
 abbrev M := StateT State <| IO
 
-def M.run (x : M α) (stream : IO.FS.Stream) : IO (α × State) := do
-  StateT.run x { stream := stream }
+def M.run (x : M α) (stream : IO.FS.Stream) (liberal := false) : IO (α × State) := do
+  StateT.run x { stream := stream , liberal }
 
 @[inline]
 def fail (msg : String) : M α :=
@@ -329,11 +332,12 @@ def parseInductInfo (json : Json) : M Unit := do
   let some (.bool isUnsafe) := data["isUnsafe"]? | fail s!"inductInfo invalid"
   let some (.bool _isReflexive) := data["isReflexive"]? | fail s!"inductInfo invalid"
 
-  if isUnsafe then fail "Unsafe inductives are not supported"
-  if allIdxs.size > 1 then fail "Mutual inductives are not supported"
-  if numNested > 0 then fail "Nested inductives are not supported"
-
   let name ← getName nameIdx
+
+  if isUnsafe then fail s!"Unsafe inductive {pp name} not supported"
+  if allIdxs.size > 1 then fail s!"Mutual inductive {pp name} not supported"
+  if numNested > 0 then fail s!"Nested inductive {pp name} not supported"
+
   let levelParams ← getNameList levelParamsIdxs
   let type ← getExpr typeIdx
   let ctorNames ← getNameList ctorsIdxs
@@ -378,40 +382,46 @@ def parseInductive (data : Std.TreeMap.Raw String Json) : M Unit := do
   -- recs.forM parseRecInfo
 
 def parseItem (line : String) : M Unit := do
-  let obj ← parseJsonObj line
-  let kv := obj.toList
-  -- Normalize key order...
-  let kv := match kv with
-    | [x, y@("in", _)] => [y,x]
-    | [x, y@("ie", _)] => [y,x]
-    | [x, y@("il", _)] => [y,x]
-    | _ =>kv
-  -- so that we can match on it easily
-  match kv with
-  | [("in", .num (idx : Nat)),("str", data)] =>   addName idx <| ← parseNameStr data
-  | [("in", .num (idx : Nat)),("num", data)] =>   addName idx <| ← parseNameNum data
-  | [("il", .num (idx : Nat)),("succ", data)] =>  addLevel idx <| ← parseLevelSucc data
-  | [("il", .num (idx : Nat)),("max", data)] =>   addLevel idx <| ← parseLevelMax data
-  | [("il", .num (idx : Nat)),("imax", data)] =>  addLevel idx <| ← parseLevelImax data
-  | [("il", .num (idx : Nat)),("param", data)] => addLevel idx <| ← parseLevelParam data
-  | [("ie", .num (idx : Nat)),("bvar", data)] =>  addExpr idx <| ← parseExprBVar data
-  | [("ie", .num (idx : Nat)),("sort", data)] =>  addExpr idx <| ← parseExprSort data
-  | [("ie", .num (idx : Nat)),("const", data)] => addExpr idx <| ← parseExprConst data
-  | [("ie", .num (idx : Nat)),("app", data)] =>   addExpr idx <| ← parseExprApp data
-  | [("ie", .num (idx : Nat)),("lam", data)] =>   addExpr idx <| ← parseExprLam data
-  | [("ie", .num (idx : Nat)),("forallE", data)] =>addExpr idx <| ← parseExprForallE data
-  | [("ie", .num (idx : Nat)),("letE", data)] =>   addExpr idx <| ← parseExprLetE data
-  | [("ie", .num (idx : Nat)),("proj", data)] =>   addExpr idx <| ← parseExprProj data
-  | [("ie", .num (idx : Nat)),("natVal", data)] => addExpr idx <| ← parseExprNatLit data
-  | [("ie", .num (idx : Nat)),("strVal", data)] => addExpr idx <| ← parseExprStrLit data
-  | [("ie", .num (idx : Nat)),("mdata", data)] => addExpr idx <| ← parseExprMdata data
-  | [("axiom", .obj data)] => parseAxiomInfo data
-  | [("def", .obj data)] => parseDefnInfo data
-  | [("thm", .obj data)] => parseThmInfo data
-  | [("opaque", .obj data)] => parseOpaqueInfo data
-  | [("quot", .obj data)] => parseQuotInfo data
-  | [("inductive", .obj data)] => parseInductive data
-  | _ => fail s!"Unknown export object with keys {obj.keys}"
+  try
+    let obj ← parseJsonObj line
+    let kv := obj.toList
+    -- Normalize key order...
+    let kv := match kv with
+      | [x, y@("in", _)] => [y,x]
+      | [x, y@("ie", _)] => [y,x]
+      | [x, y@("il", _)] => [y,x]
+      | _ =>kv
+    -- so that we can match on it easily
+    match kv with
+    | [("in", .num (idx : Nat)),("str", data)] =>   addName idx <| ← parseNameStr data
+    | [("in", .num (idx : Nat)),("num", data)] =>   addName idx <| ← parseNameNum data
+    | [("il", .num (idx : Nat)),("succ", data)] =>  addLevel idx <| ← parseLevelSucc data
+    | [("il", .num (idx : Nat)),("max", data)] =>   addLevel idx <| ← parseLevelMax data
+    | [("il", .num (idx : Nat)),("imax", data)] =>  addLevel idx <| ← parseLevelImax data
+    | [("il", .num (idx : Nat)),("param", data)] => addLevel idx <| ← parseLevelParam data
+    | [("ie", .num (idx : Nat)),("bvar", data)] =>  addExpr idx <| ← parseExprBVar data
+    | [("ie", .num (idx : Nat)),("sort", data)] =>  addExpr idx <| ← parseExprSort data
+    | [("ie", .num (idx : Nat)),("const", data)] => addExpr idx <| ← parseExprConst data
+    | [("ie", .num (idx : Nat)),("app", data)] =>   addExpr idx <| ← parseExprApp data
+    | [("ie", .num (idx : Nat)),("lam", data)] =>   addExpr idx <| ← parseExprLam data
+    | [("ie", .num (idx : Nat)),("forallE", data)] =>addExpr idx <| ← parseExprForallE data
+    | [("ie", .num (idx : Nat)),("letE", data)] =>   addExpr idx <| ← parseExprLetE data
+    | [("ie", .num (idx : Nat)),("proj", data)] =>   addExpr idx <| ← parseExprProj data
+    | [("ie", .num (idx : Nat)),("natVal", data)] => addExpr idx <| ← parseExprNatLit data
+    | [("ie", .num (idx : Nat)),("strVal", data)] => addExpr idx <| ← parseExprStrLit data
+    | [("ie", .num (idx : Nat)),("mdata", data)] => addExpr idx <| ← parseExprMdata data
+    | [("axiom", .obj data)] => parseAxiomInfo data
+    | [("def", .obj data)] => parseDefnInfo data
+    | [("thm", .obj data)] => parseThmInfo data
+    | [("opaque", .obj data)] => parseOpaqueInfo data
+    | [("quot", .obj data)] => parseQuotInfo data
+    | [("inductive", .obj data)] => parseInductive data
+    | _ => fail s!"Unknown export object with keys {obj.keys}"
+  catch e =>
+    if (← get).liberal then
+      pure ()
+    else
+      throw e
 
 partial def parseItems : M Unit :=
   go
@@ -431,8 +441,8 @@ def parseFile : M Unit := do
 
 end Parse
 
-def parseStream (stream : IO.FS.Stream) : IO (Array Declaration) := do
-  let (_, state) ← Parse.M.run Parse.parseFile stream
+def parseStream (stream : IO.FS.Stream) (liberal := false) : IO (Array Declaration) := do
+  let (_, state) ← Parse.M.run Parse.parseFile stream (liberal := liberal)
   let { decls, .. } := state
   return decls
 

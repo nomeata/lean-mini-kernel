@@ -416,6 +416,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp name}"
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      appendError (fun _ => s!"… while checking declaration {pp name}") do
       let _ ← inferType type
     -- TODO: Check for duplicate names
     return { env with consts := env.consts.insert name (.opaque lparams type) }
@@ -423,6 +424,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp name}"
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      appendError (fun _ => s!"… while checking declaration {pp name}") do
       let s ← inferType type
       assertIsSort s
       let type' ← inferType value

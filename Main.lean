@@ -15,14 +15,15 @@ def runKernel (decls : Array Declaration) : IO Unit := do
   IO.println s!"Accepted {decls.size} declarations."
 
 def main (args : List String) : IO Unit := do
-  let (inputPath, parseOnly) ← match args with
-    | ["--parse-only", inputPath] => pure (inputPath, true)
-    | [inputPath] => pure (inputPath, false)
-    | _ => throw <| .userError "Expected input file path as first argument, optionally preceded by --parse-only."
+  let (flags, args) := args.partition (·.startsWith "--")
+  let [inputPath] := args |
+    throw <| .userError "Expected exactly one input file path as argument."
+  let parseOnly := flags.contains "--parse-only"
+  let liberal := flags.contains "--liberal"
   let handle ← IO.FS.Handle.mk inputPath .read
   let decls ←
     try
-      Export.parseStream (.ofHandle handle)
+      Export.parseStream (.ofHandle handle) (liberal := liberal)
     catch e =>
       IO.println s!"Declinig to handle due to parse error:"
       IO.println s!"{e}"
