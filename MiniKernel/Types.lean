@@ -51,8 +51,12 @@ def Declaration.name : Declaration → Name
 A ConstantInfo is what the kernel stores in the environment.
 -/
 inductive ConstantInfo
-  /-- Any kind of inert opaque definition (axiom, opaque, inductive, constructor) -/
+  /-- An inert opaque definition (axiom, opaque, constructor) -/
   | «opaque» : (levelParams : List Name) → (type : Expr) → ConstantInfo
+  /-- An inductive definition. The extra information over `opaque` is needed to typecheck projections. -/
+  | «inductive» : (levelParams : List Name) → (type : Expr) →
+    (numParams numIndices : Nat) →
+    (ctors : Array Name) → ConstantInfo
   /-- Any kind of transparent definition (def, theorem) -/
   | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → ConstantInfo
   /--

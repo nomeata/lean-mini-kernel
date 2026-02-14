@@ -105,19 +105,21 @@ def readLocalTypes (n : Nat) : LEnvM (Array Expr) := do
     throw s!"Expected at least {n} local variables, got {lenv.length}"
   return lenv.take n |>.mapIdx (fun i t => t.shift (d := i + 1)) |>.reverse |>.toArray
 
-def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
-  match cinfo with
-  | .opaque _ type => type
-  | .def _ type _ => type
-  | .recursor _ type _ _ _ _ => type
-  | .special _ type => type
-
 def ConstantInfo.lparams (cinfo : ConstantInfo) : List Name  :=
   match cinfo with
   | .opaque lparams _ => lparams
+  | .inductive lparams .. => lparams
   | .def lparams _ _ => lparams
   | .recursor lparams _ _ _ _ _ => lparams
   | .special lparams _ => lparams
+
+def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
+  match cinfo with
+  | .opaque _ type => type
+  | .inductive _ type .. => type
+  | .def _ type _ => type
+  | .recursor _ type _ _ _ _ => type
+  | .special _ type => type
 
 def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
   match cinfo with
@@ -170,6 +172,7 @@ def getLocalType (idx : Nat) : LEnvM Expr := do
     |  throw s!"deBruijn index #{idx} out of bounds"
   return t.shift (d := idx + 1)
 
+mutual
 partial def inferType : Expr → LEnvM Expr
   | .bvar idx => do
     getLocalType idx
@@ -209,9 +212,77 @@ partial def inferType : Expr → LEnvM Expr
     assertIsDefEq type valueType
     let body' := body.subst value
     inferType body'
-  | e@(.proj ..) =>
-    throw <| "Type inference not yet implemented on projections\n" ++ pp e
+  | .proj n idx e => inferProj n idx e
   | e => throw <| "Type inference not yet implemented:\n" ++ pp e
+
+partial def isProp (type : Expr) : LEnvM Bool := do
+  let s ← inferType type
+  let u ← sort s
+  return u.isZero
+
+partial def inferProj (n : Name) (idx : Nat) (e : Expr) : LEnvM Expr := do
+  let type ← whnf (← inferType e)
+  let (.const indName us, args) := type.getApp
+    | throw s!"Type of projected expression is not an inductive: {pp type}"
+  let some (.inductive _lparams _indType numParams numIndices ctors)
+      := (← read).env.consts[indName]?
+    | throw s!"Type of projected expression is not an inductive: {pp type}"
+  -- Unclear if this can be happen, if `e` is well-typed:
+  unless args.size = numParams + numIndices do
+    throw s!"Invalid projection, expression is not fully applied"
+  let #[ctorName] := ctors
+    | throw s!"Invalid projection, {pp indName} has not exactly one constructor"
+  -- The validity of a projection depends on the type that the single
+  -- constructor would have here, given the concrete level and expression parameters
+  let some (.opaque ctorlparams ctorType) := (← read).env.consts[ctorName]?
+    | throw s!"Constructor {pp ctorName} not found in environment"
+  let ctorType ← ctorType.instantiateLParams ctorlparams us
+  let mut ctorType ← instantiateForalls ctorType args[:numParams]
+  let isPropType ← isProp ctorType
+  for i in [:idx] do
+    let .forall _ d b := ctorType
+      | throw s!"Projection index {idx+1} out of bounds for {pp indName}"
+    if isPropType && b.hasBVar 0 then
+      unless (← isProp d) do
+        throw s!"Invalid projection; projection {i+1} is depended upon and not a proposition."
+    ctorType := b.subst (.proj n i e)
+  let .forall _ d _b := ctorType
+    | throw s!"Projection index {idx+1} out of bounds for {pp indName}"
+  if isPropType then
+    unless (← isProp d) do
+      throw s!"Invalid projection; projection {idx+1} would project data out of a proposition"
+  return d
+
+partial def openForall (n : Nat) (type : Expr) (k : Expr → LEnvM α) : LEnvM α := do
+  match n with
+  | 0 => k type
+  | n+1 =>
+    let type' ← whnf type
+    let .forall _ domain body := type' | throw s!"Insufficient number of parameters: {pp type}"
+    openType domain do
+      openForall n body k
+
+partial def instantiateForalls (type : Expr) (xs : Array Expr) : LEnvM Expr := do
+  let mut result := type
+  for x in xs do
+    let type' ← whnf result
+    let .forall _ _ body := type' | throw s!"Expected a function type, got {pp type'}"
+    result := body.subst x
+  return result
+
+partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnvM α := do
+  let type' ← whnf type
+  if let .forall _ domain body := type' then
+    openType domain do
+        openForallEager body fun n r => k (n + 1) r
+  else
+    k 0 type
+
+/-- Wrapps `types` in `n` foralls, with types taken from the local environment -/
+partial def mkForall (n : Nat) (body : Expr) : LEnvM Expr := do
+  let types := (← read).lenv.take n
+  return types.foldl (fun body type => .forall .anonymous type body) body
+end
 
 def checkType (e : Expr) : LEnvM Unit := do
   let _ ← inferType e
@@ -296,38 +367,12 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
     appendError (fun _ => s!"… while checking level parameters of {pp e1} =?= {pp e2}") do
       for (l1, l2) in List.zip ls1 ls2 do
         assertLevelEq l1 l2
+  | .proj n1 idx1 e1, .proj n2 idx2 e2 =>
+    unless n1 == n2 && idx1 == idx2 do
+      throw s!"Projections differ: {pp e1} =?= {pp e2}"
+    assertIsDefEq e1 e2
   | e1, e2 =>
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
-
-def openForall (n : Nat) (type : Expr) (k : Expr → LEnvM α) : LEnvM α := do
-  match n with
-  | 0 => k type
-  | n+1 =>
-    let type' ← whnf type
-    let .forall _ domain body := type' | throw s!"Insufficient number of parameters: {pp type}"
-    openType domain do
-      openForall n body k
-
-def instantiateForalls (type : Expr) (xs : Array Expr) : LEnvM Expr := do
-  let mut result := type
-  for x in xs do
-    let type' ← whnf result
-    let .forall _ _ body := type' | throw s!"Expected a function type, got {pp type'}"
-    result := body.subst x
-  return result
-
-partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnvM α := do
-  let type' ← whnf type
-  if let .forall _ domain body := type' then
-    openType domain do
-        openForallEager body fun n r => k (n + 1) r
-  else
-    k 0 type
-
-/-- Wrapps `types` in `n` foralls, with types taken from the local environment -/
-def mkForall (n : Nat) (body : Expr) : LEnvM Expr := do
-  let types := (← read).lenv.take n
-  return types.foldl (fun body type => .forall .anonymous type body) body
 
 partial def freshLevelName (used : List Name) : Name :=
   let rec loop (n : Nat) : Name :=
@@ -396,7 +441,8 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
               let u ← sort indType
               return (numIndices, u)
 
-    env := { env with consts := env.consts.insert indName (.opaque lparams indType) }
+    let indInfo := .inductive lparams indType numParams numIndices (ctors.map (·.1))
+    env := { env with consts := env.consts.insert indName indInfo }
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       for (ctorName, ctorType) in ctors do
         appendError (fun _ => s!"… while checking type of constructor {pp ctorName}") do

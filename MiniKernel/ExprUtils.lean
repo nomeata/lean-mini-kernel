@@ -2,6 +2,12 @@ import MiniKernel.Types
 
 def Name.simple (s : String) : Name := .str .anonymous s
 
+def Level.isZero : Level → Bool
+  | .zero => true
+  | .max l1 l2 => isZero l1 && isZero l2
+  | .imax _ l2 => isZero l2
+  | .succ _ | .param _ => false
+
 def Level.isNotZero : Level → Bool
   | .zero => false
   | .max l1 l2 => isNotZero l1 || isNotZero l2
