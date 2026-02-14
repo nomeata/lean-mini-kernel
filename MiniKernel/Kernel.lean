@@ -164,8 +164,17 @@ where
     go f (a :: stack)
   | .lam _ _ body, a::stack =>
     go (body.subst a) stack
+  | .proj indName idx e, stack => do
+    let e ← whnf e
+    let fail : LEnvM Expr := return (Expr.proj indName idx e).appN stack.toArray
+    let (.const f _, args) := e.getApp | fail
+    let some (.inductive _ _ numParams _ ctors) := (← read).env.consts[indName]?  | fail
+    unless ctors == #[f] do return ← fail
+    unless numParams + idx < args.size do
+      throw "Type error during reduction: projection index {idx+1} out of bounds for {pp e} "
+    go args[numParams + idx]! stack
   | e, stack =>
-    return e.appN stack.toArray  -- Very naive implementation: no reduction
+    return e.appN stack.toArray
 
 def getLocalType (idx : Nat) : LEnvM Expr := do
   let some t := (← read).lenv[idx]?
