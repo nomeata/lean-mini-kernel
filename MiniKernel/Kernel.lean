@@ -84,7 +84,7 @@ def Expr.substLevel (e : Expr) (f : Name → Level) : Expr := match e with
   | .sort l => .sort (l.substLevel f)
   | .bvar .. | .natLit .. | .strLit .. => e
 
-def sort (e : Expr) : LEnvM Level :=
+def sort (e : Expr) : LEnvM Level := do
   match e with
   | .sort u => return u
   | _ => throw s!"Expected a sort, got {pp e}"
@@ -110,7 +110,7 @@ def ConstantInfo.lparams (cinfo : ConstantInfo) : List Name  :=
   | .opaque lparams _ => lparams
   | .inductive lparams .. => lparams
   | .def lparams _ _ => lparams
-  | .recursor lparams _ _ _ _ _ => lparams
+  | .recursor lparams .. => lparams
   | .special lparams _ => lparams
 
 def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
@@ -118,7 +118,7 @@ def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   | .opaque _ type => type
   | .inductive _ type .. => type
   | .def _ type _ => type
-  | .recursor _ type _ _ _ _ => type
+  | .recursor _ type .. => type
   | .special _ type => type
 
 def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
@@ -129,6 +129,10 @@ def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
 @[extern "assertIsDefEq"]
 opaque assertIsDefEq (e1 e2 : Expr) : LEnvM Unit
 
+def isDefEq (e1 e2 : Expr) : LEnvM Bool :=
+  try assertIsDefEq e1 e2; return true
+  catch _ => return false
+
 def Expr.instantiateLParams (e : Expr) (lparams : List Name) (levels : List Level) : LEnvM Expr := do
   unless levels.length = lparams.length do
     throw s!"Expected {lparams.length} levels, got {levels.length}"
@@ -137,6 +141,12 @@ def Expr.instantiateLParams (e : Expr) (lparams : List Name) (levels : List Leve
     | some idx => levels[idx]!
     | none => .param n -- should not happen
 
+def getLocalType (idx : Nat) : LEnvM Expr := do
+  let some t := (← read).lenv[idx]?
+    |  throw s!"deBruijn index #{idx} out of bounds"
+  return t.shift (d := idx + 1)
+
+mutual
 partial def whnf (e : Expr) : LEnvM Expr :=
   go e []
 where
@@ -146,9 +156,19 @@ where
     if let some value := cinfo.value? then
       let value ← value.instantiateLParams cinfo.lparams levels
       return ← go value stack
-    if let .recursor _ _ numParams numMinors numIndices rules := cinfo then
+    if let .recursor lparams _ numParams numMinors numIndices rules kType? := cinfo then
       let majorPos := numParams + 1 + numMinors + numIndices
       if let some major := stack[majorPos]? then
+        if let .some kType := kType? then
+          let kType ← kType.instantiateLParams lparams levels
+          let kType := kType.substs stack.toArray[:numParams]
+          if (←  isDefEq (← inferType major) kType) then
+            let #[(_, rhs)] := rules | throw s!"Wrong number of rules for k-rule recursor"
+            let args := stack.toArray[:numParams + 1 + numMinors]
+            let rhs ← rhs.instantiateLParams cinfo.lparams levels
+            let rhs := rhs.substs args
+            return ← go rhs (stack.drop (majorPos + 1))
+
         let major' ← whnf major
         if let (.const f _, conArgs) := major.getApp then
           if let some (_, rhs) := rules.find? (fun (ctorName, _) => ctorName == f) then
@@ -176,12 +196,6 @@ where
   | e, stack =>
     return e.appN stack.toArray
 
-def getLocalType (idx : Nat) : LEnvM Expr := do
-  let some t := (← read).lenv[idx]?
-    |  throw s!"deBruijn index #{idx} out of bounds"
-  return t.shift (d := idx + 1)
-
-mutual
 partial def inferType : Expr → LEnvM Expr
   | .bvar idx => do
     getLocalType idx
@@ -204,8 +218,10 @@ partial def inferType : Expr → LEnvM Expr
     | _ => throw s!"Expected a function type in application of {pp f} to {pp arg}, got {pp fType}"
   | .forall _ type body => do
     let s1 ← inferType type
+    let s1 ← whnf s1
     let l1 ← sort s1
     let s2 ← openType type <| inferType body
+    let s2 ← whnf s2
     let l2 ← sort s2
     let u := Level.imax l1 l2
     return .sort u
@@ -530,6 +546,17 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
         | _ => return true
       go ctorType
 
+    let kType? ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      -- Only inductive predicates
+      if indLevel.isNotZero then return .none
+      -- .. with one constructor
+      let #[(_, ctorType)] := ctors | return .none
+      openForall numParams ctorType fun ctorType =>
+        -- .. with no fields
+        if ctorType matches .forall .. then
+          return none
+        else
+          return some ctorType
 
     let (motiveLevel, lparams') ← if elimToSort then
       let v := freshLevelName lparams
@@ -617,7 +644,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             let rhs := minor.appN (fields ++ ihs)
             return (ctorName, rhs)
 
-    let recInfo := ConstantInfo.recursor lparams' recType numParams numCtors numIndices rules
+    let recInfo := ConstantInfo.recursor lparams' recType numParams numCtors numIndices rules kType?
     env := { env with consts := env.consts.insert recName recInfo }
 
     pure env

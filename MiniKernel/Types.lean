@@ -60,13 +60,19 @@ inductive ConstantInfo
   /-- Any kind of transparent definition (def, theorem) -/
   | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → ConstantInfo
   /--
-  A recursors. The rules list the supported constructors, and the RHS
+  A recursor.
+
+  The rules list the supported constructors, and the RHS
   is an open expression that's the body of a lambda
   `fun params motive minors fields => …`.
+
+  The `kType`, if not none, is the body of a lambda `fun params` and indicates which type the major
+  argument has to have for the rule to apply directly (no fields)
   -/
   | «recursor» : (levelParams : List Name) → (type : Expr) →
     (numParams numMinors numIndices : Nat) →
     (rules : Array (Name × Expr)) →
+    (kType : Option Expr) →
     ConstantInfo
   /-- Used for quotients (maybe) -/
   | special : (levelParams : List Name) → (type : Expr) → ConstantInfo
