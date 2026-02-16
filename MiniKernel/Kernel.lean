@@ -193,6 +193,14 @@ where
     unless numParams + idx < args.size do
       throw "Type error during reduction: projection index {idx+1} out of bounds for {pp e} "
     go args[numParams + idx]! stack
+  | .natLit n, _stack => do
+    -- The parser should already catch these, but let's be explicit here as well
+    if n > 10 then
+      throw "The mini kernel does not support nat literals larger than 10"
+    if n = 0 then
+      return .const ((Name.simple "Nat").str "zero") []
+    else
+      return (Expr.const ((Name.simple "Nat").str "succ") []).app (.natLit (n-1))
   | e, stack =>
     return e.appN stack.toArray
 
@@ -238,7 +246,8 @@ partial def inferType : Expr → LEnvM Expr
     let body' := body.subst value
     inferType body'
   | .proj n idx e => inferProj n idx e
-  | e => throw <| "Type inference not yet implemented:\n" ++ pp e
+  | .natLit _ => return .const (.simple "Nat") []
+  | .strLit _ => return .const (.simple "String") []
 
 partial def isProp (type : Expr) : LEnvM Bool := do
   let s ← inferType type

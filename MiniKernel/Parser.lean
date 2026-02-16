@@ -208,6 +208,8 @@ def parseExprProj (json : Json) : M Expr := do
 def parseExprNatLit (json : Json) : M Expr := do
   let .str natValStr := json | fail s!"Expr.lit natVal invalid"
   let some natVal := String.toNat? natValStr | fail s!"Expr.lit natVal invalid"
+  if natVal > 10 then
+    fail "The mini kernel does not support nat literals larger than 10"
 
   return .natLit natVal
 
