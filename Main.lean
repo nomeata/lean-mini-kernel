@@ -2,17 +2,26 @@ import MiniKernel.Parser
 import MiniKernel.PP
 import MiniKernel.Kernel
 
-def runKernel (decls : Array Declaration) : IO Unit := do
+def runKernel (decls : Array Declaration) (liberal := false) : IO Unit := do
   let mut env : Environment := .empty
+  let mut accepted := 0
+  let mut rejeced := 0
+  let mut skipped := 0
   for decl in decls do
     match env.add decl with
     | Except.error msg =>
-      IO.println s!"Rejecting declaration {pp decl.name}:"
-      IO.println s!"{msg}"
-      IO.Process.exit 1
+      if liberal && msg.contains "Unknown constant" then
+        skipped := skipped + 1
+      else
+        rejeced := rejeced + 1
+        IO.println s!"Rejecting declaration {pp decl.name}:"
+        IO.println s!"{msg}"
+        unless liberal do
+          IO.Process.exit 1
     | Except.ok newEnv =>
       env := newEnv
-  IO.println s!"Accepted {decls.size} declarations."
+      accepted := accepted + 1
+  IO.println s!"Accepted {accepted} declarations, rejected {rejeced} declarations with {skipped} depending declarations skipped."
 
 def main (args : List String) : IO Unit := do
   let (flags, args) := args.partition (·.startsWith "--")
@@ -31,4 +40,4 @@ def main (args : List String) : IO Unit := do
   if parseOnly then
     IO.println s!"Successfully parsed {decls.size} declarations."
   else
-    runKernel decls
+    runKernel decls (liberal := liberal)
