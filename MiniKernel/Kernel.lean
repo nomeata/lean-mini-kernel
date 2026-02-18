@@ -170,7 +170,7 @@ where
             return ← go rhs (stack.drop (majorPos + 1))
 
         let major' ← whnf major
-        if let (.const f _, conArgs) := major.getApp then
+        if let (.const f _, conArgs) := major'.getApp then
           if let some (_, rhs) := rules.find? (fun (ctorName, _) => ctorName == f) then
             let fields := conArgs[numParams:]
             let args := stack.toArray[:numParams + 1 + numMinors] ++ fields |>.toArray
@@ -407,7 +407,7 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
     return ()
   let e1 ← whnf e1
   let e2 ← whnf e2
-  appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
+  appendError (fun _ => s!"… whnfed down to {pp e1} =?= {pp e2}") do
   match e1, e2 with
   | .sort l1, .sort l2 =>
     assertLevelEq l1 l2
