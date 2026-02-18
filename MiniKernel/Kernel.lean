@@ -382,6 +382,22 @@ def isPropOrUnit (t : Expr) : LEnvM Bool := do
   let some (.inductive _ _ _ _ _ isUnit) := (← read).env.consts[name]? | return false
   return isUnit
 
+/-- Structure eta. -/
+def tryStructureEta (e1 e2 : Expr) : LEnvM Bool := do
+  -- This is a bit round-about; we could store a flag on the constructor whether it is eligible
+  -- for structure eta, or a reference to its type
+  let (.const conName _, args) := e1.getApp | return false
+  let (.const indName _, _) := (← whnf (← inferType e1)).getApp | return false
+  let some (.inductive _ _ numParams _ ctors _) := (← read).env.consts[indName]? | return false
+  let #[conName'] := ctors | return false
+  unless conName == conName' do return false
+  -- The official kernel checks whether the types of `e1` and `e2` are defeq
+  -- Is this necessary here? Do we ever run `isDefEq` without having first checked their types?
+  for h : i in [numParams:args.size] do
+    -- By the time we reach this, proof irrelevance should have kicked in,
+    -- so we do not need to check if these projections project out of a propositoin
+    unless (← isDefEq args[i] (Expr.proj indName (i-numParams) e2)) do return false
+  return true
 
 @[export assertIsDefEq]
 partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
@@ -420,6 +436,9 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
       throw s!"Projections differ: {pp e1} =?= {pp e2}"
     assertIsDefEq e1 e2
   | e1, e2 =>
+    if (← tryStructureEta e1 e2) then return
+    if (← tryStructureEta e2 e1) then return
+
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
 
 partial def freshLevelName (used : List Name) : Name :=
