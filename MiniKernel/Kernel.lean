@@ -188,7 +188,7 @@ where
     let e ← whnf e
     let fail : LEnvM Expr := return (Expr.proj indName idx e).appN stack.toArray
     let (.const f _, args) := e.getApp | fail
-    let some (.inductive _ _ numParams _ ctors) := (← read).env.consts[indName]?  | fail
+    let some (.inductive _ _ numParams _ ctors _) := (← read).env.consts[indName]?  | fail
     unless ctors == #[f] do return ← fail
     unless numParams + idx < args.size do
       throw "Type error during reduction: projection index {idx+1} out of bounds for {pp e} "
@@ -258,7 +258,7 @@ partial def inferProj (n : Name) (idx : Nat) (e : Expr) : LEnvM Expr := do
   let type ← whnf (← inferType e)
   let (.const indName us, args) := type.getApp
     | throw s!"Type of projected expression is not an inductive: {pp type}"
-  let some (.inductive _lparams _indType numParams numIndices ctors)
+  let some (.inductive _lparams _indType numParams numIndices ctors _)
       := (← read).env.consts[indName]?
     | throw s!"Type of projected expression is not an inductive: {pp type}"
   -- Unclear if this can be happen, if `e` is well-typed:
@@ -372,9 +372,23 @@ def assertLevelEq (l1 l2 : Level) : LEnvM Unit :=
   unless (l1.simplify.le l2.simplify) && (l2.simplify.le l1.simplify) do
     throw s!"Expected level equality does not hold: {pp l1} = {pp l2}"
 
+def isPropOrUnit (t : Expr) : LEnvM Bool := do
+  let s ← inferType t
+  let s ← whnf s
+  let u ← sort s
+  if u.isZero then return true
+  let t ← whnf t
+  let (.const name _, _) := t.getApp | return false
+  let some (.inductive _ _ _ _ _ isUnit) := (← read).env.consts[name]? | return false
+  return isUnit
+
+
 @[export assertIsDefEq]
 partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
+  -- Check proof irrelevance first
+  if (← isPropOrUnit (← inferType e1)) then
+    return ()
   let e1 ← whnf e1
   let e2 ← whnf e2
   appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
@@ -477,7 +491,12 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
               let u ← sort indType
               return (numIndices, u)
 
-    let indInfo := .inductive lparams indType numParams numIndices (ctors.map (·.1))
+    let isUnit ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
+      let #[(_, ctorType)] := ctors | return false
+      openForall numParams ctorType fun ctorType =>
+        return !(ctorType matches .forall ..)
+
+    let indInfo := .inductive lparams indType numParams numIndices (ctors.map (·.1)) isUnit
     env := { env with consts := env.consts.insert indName indInfo }
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       for (ctorName, ctorType) in ctors do

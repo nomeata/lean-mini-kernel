@@ -56,7 +56,7 @@ inductive ConstantInfo
   /-- An inductive definition. The extra information over `opaque` is needed to typecheck projections. -/
   | «inductive» : (levelParams : List Name) → (type : Expr) →
     (numParams numIndices : Nat) →
-    (ctors : Array Name) → ConstantInfo
+    (ctors : Array Name) → (isUnit : Bool) → ConstantInfo
   /-- Any kind of transparent definition (def, theorem) -/
   | «def» : (levelParams : List Name) → (type : Expr) → (value : Expr) → ConstantInfo
   /--
