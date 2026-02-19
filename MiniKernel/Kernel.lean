@@ -184,6 +184,8 @@ where
     go f (a :: stack)
   | .lam _ _ body, a::stack =>
     go (body.subst a) stack
+  | .let _ _ val body, stack =>
+    go (body.subst val) stack
   | .proj indName idx e, stack => do
     let e ← whnf e
     let fail : LEnvM Expr := return (Expr.proj indName idx e).appN stack.toArray
