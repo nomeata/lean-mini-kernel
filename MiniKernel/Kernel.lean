@@ -486,7 +486,10 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       appendError (fun _ => s!"… while checking declaration {pp name}") do
       let s ← inferType type
-      assertIsSort s
+      let u ← sort s
+      if kind matches .theorem then
+        unless u.isZero do
+          throw s!"The type of a theorem must be a proposition, but {pp type} has universe {pp u}"
       let type' ← inferType value
       assertIsDefEq type type'
       pure ()
