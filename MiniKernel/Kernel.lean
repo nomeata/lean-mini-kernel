@@ -401,6 +401,11 @@ def tryStructureEta (e1 e2 : Expr) : LEnvM Bool := do
     unless (← isDefEq args[i] (Expr.proj indName (i-numParams) e2)) do return false
   return true
 
+def tryFunEta (e1 e2 : Expr) : LEnvM Bool := do
+  let .lam _ t1 b1 := e1 | return false
+  openType t1 do
+    isDefEq b1 (.app (e2.shift) (.bvar 0))
+
 @[export assertIsDefEq]
 partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   appendError (fun _ => s!"… while checking {pp e1} =?= {pp e2}") do
@@ -440,6 +445,9 @@ partial def assertIsDefEqImpl (e1 e2 : Expr) : LEnvM Unit := do
   | e1, e2 =>
     if (← tryStructureEta e1 e2) then return
     if (← tryStructureEta e2 e1) then return
+
+    if (← tryFunEta e1 e2) then return
+    if (← tryFunEta e2 e1) then return
 
     throw s!"Expected definitional equality between {pp e1} and {pp e2}, but they differ."
 
