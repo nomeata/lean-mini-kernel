@@ -307,10 +307,10 @@ partial def instantiateForalls (type : Expr) (xs : Array Expr) : LEnvM Expr := d
   return result
 
 partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnvM α := do
-  let type' ← whnf type
-  if let .forall _ domain body := type' then
+  let type ← whnf type
+  if let .forall _ domain body := type then
     openType domain do
-        openForallEager body fun n r => k (n + 1) r
+      openForallEager body fun n r => k (n + 1) r
   else
     k 0 type
 
@@ -318,6 +318,11 @@ partial def openForallEager (type : Expr) (k : Nat → Expr → LEnvM α) : LEnv
 partial def mkForall (n : Nat) (body : Expr) : LEnvM Expr := do
   let types := (← read).lenv.take n
   return types.foldl (fun body type => .forall .anonymous type body) body
+
+/-- Wraps `body` in `n` lambdas, with types taken from the local environment -/
+partial def mkLambda (n : Nat) (body : Expr) : LEnvM Expr := do
+  let types := (← read).lenv.take n
+  return types.foldl (fun body type => .lam .anonymous type body) body
 end
 
 def checkType (e : Expr) : LEnvM Unit := do
@@ -560,9 +565,13 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             unless indLevel matches .zero do
               assertLevelLe u indLevel
             let ctorParam ← whnf ctorParam
-            if (hasConst indName ctorParam) then
-              -- TODO: Reflexive occurrences
-              isValidIndApp shift ctorParam
+            if hasConst indName ctorParam then
+              openForallEager ctorParam fun m retType => do
+                let domainTypes ← readLocalTypes m
+                for d in domainTypes do
+                  if hasConst indName d then
+                    throw s!"Not strictly positive: {pp indName} occurs in domain"
+                isValidIndApp (shift + m) retType
 
 
         let rec checkCtorType shift argIdx ctorType := do
@@ -600,7 +609,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           openType domain do
             let appearsInType ← openForallEager body fun shift resType =>
                 return resType.getApp.2.contains (.bvar shift)
-            unless u matches .zero || appearsInType do
+            unless u.isZero || appearsInType do
               return false
             go body
         | _ => return true
@@ -647,10 +656,11 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
                 let t ← inferType field
                 let t ← whnf t
                 if hasConst indName t then
-                  -- TODO: reflexive occurrences
-                  let idxs := t.getApp.2[numParams:numParams+numIndices]
-                  let motive := Expr.bvar numFields
-                  let hypType := motive.appN (idxs ++ #[field])
+                  let hypType ← openForallEager t fun m retType => do
+                    let idxs := retType.getApp.2[numParams:numParams+numIndices]
+                    let motive := Expr.bvar (numFields + m)
+                    let body := motive.appN (idxs ++ #[field.shift (d := m) |>.appN (Expr.bvars m)])
+                    mkForall m body
                   pure (some hypType)
                 else
                   pure none
@@ -694,10 +704,11 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
               let t ← inferType field
               let t ← whnf t
               if hasConst indName t then
-                -- TODO: reflexive occurrences
-                let idxs := t.getApp.2[numParams:numParams+numIndices]
-                let recApp := Expr.const recName us'
-                let ih := recApp.appN (Expr.bvars (numParams + 1 + numCtors) numFields ++ idxs ++ #[field])
+                let ih ← openForallEager t fun m retType => do
+                  let idxs := retType.getApp.2[numParams:numParams+numIndices]
+                  let recApp := Expr.const recName us'
+                  let body := recApp.appN (Expr.bvars (numParams + 1 + numCtors) (numFields + m) ++ idxs ++ #[field.shift (d := m) |>.appN (Expr.bvars m)])
+                  mkLambda m body
                 pure (some ih)
               else
                 pure none
