@@ -27,6 +27,8 @@ inductive Expr
   | let : Name → (type value body : Expr) → Expr
 deriving Inhabited, BEq
 
+def Expr.arrow (a b : Expr) : Expr := .forall .anonymous a b
+
 inductive DefKind where
   | «def»
   | «theorem»
@@ -74,8 +76,6 @@ inductive ConstantInfo
     (rules : Array (Name × Expr)) →
     (kType : Option Expr) →
     ConstantInfo
-  /-- Used for quotients (maybe) -/
-  | special : (levelParams : List Name) → (type : Expr) → ConstantInfo
 
 structure Environment where
   consts : Std.HashMap Name ConstantInfo := {}

@@ -111,7 +111,6 @@ def ConstantInfo.lparams (cinfo : ConstantInfo) : List Name  :=
   | .inductive lparams .. => lparams
   | .def lparams _ _ => lparams
   | .recursor lparams .. => lparams
-  | .special lparams _ => lparams
 
 def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   match cinfo with
@@ -119,7 +118,6 @@ def ConstantInfo.type (cinfo : ConstantInfo) : Expr :=
   | .inductive _ type .. => type
   | .def _ type _ => type
   | .recursor _ type .. => type
-  | .special _ type => type
 
 def ConstantInfo.value? (cinfo : ConstantInfo) : Option Expr :=
   match cinfo with
@@ -483,6 +481,59 @@ partial def defEqParams (n : Nat) (type1 type2 : Expr) : LEnvM Unit := do
     openType domain1 do
       defEqParams n body1 body2
 
+def Environment.addQuot (env : Environment) : Environment := open Expr in
+  let quotName := .simple "Quot"
+  let quotMkName := quotName.str "mk"
+  let quotLiftName := quotName.str "lift"
+  let quotIndName := quotName.str "ind"
+  let u := Name.simple "u"
+  let v := Name.simple "v"
+  let prop := sort .zero
+  let sortU := sort (.param u)
+  let sortV := sort (.param v)
+  let eqName := Name.simple "Eq"
+
+  let aarProp (i : Nat) : Expr := arrow (.bvar i) (arrow (.bvar (i + 1)) prop)
+  let mkQuot (aIdx rIdx : Nat) : Expr :=
+    .app (.app (.const quotName [.param u]) (.bvar aIdx)) (.bvar rIdx)
+
+  -- Quot : ∀ (α : Sort u) (_ : α → α → Prop), Sort u
+  let quotType := arrow sortU (arrow (aarProp 0) sortU)
+
+  -- Quot.mk : ∀ (α : Sort u) (r : α → α → Prop) (a : α), @Quot α r
+  let quotMkType := arrow sortU (arrow (aarProp 0) (arrow (.bvar 1) (mkQuot 2 1)))
+
+  -- Quot.lift : ∀ (α : Sort u) (r : α → α → Prop) (β : Sort v)
+  --   (f : α → β) (h : ∀ a b, r a b → @Eq β (f a) (f b)) (q : @Quot α r), β
+  let fType := arrow (.bvar 2) (.bvar 1)
+  let hType :=
+    arrow (.bvar 3) (arrow (.bvar 4)
+      (arrow (.app (.app (.bvar 4) (.bvar 1)) (.bvar 0))
+        (.app (.app (.app (.const eqName [.param v]) (.bvar 4))
+          (.app (.bvar 3) (.bvar 2)))
+          (.app (.bvar 3) (.bvar 1)))))
+  let quotLiftType :=
+    arrow sortU (arrow (aarProp 0) (arrow sortV (arrow fType
+      (arrow hType (arrow (mkQuot 4 3) (.bvar 3))))))
+
+  -- Quot.ind : ∀ (α : Sort u) (r : α → α → Prop) (β : @Quot α r → Prop)
+  --   (h : ∀ (a : α), β (@Quot.mk α r a)) (q : @Quot α r), β q
+  let betaIndType := arrow (mkQuot 1 0) prop
+  let hIndType :=
+    arrow (.bvar 2)
+      (.app (.bvar 1)
+        (.app (.app (.app (.const quotMkName [.param u]) (.bvar 3)) (.bvar 2)) (.bvar 0)))
+  let quotIndType :=
+    arrow sortU (arrow (aarProp 0) (arrow betaIndType
+      (arrow hIndType (arrow (mkQuot 3 2) (.app (.bvar 2) (.bvar 0))))))
+
+  let liftInfo := ConstantInfo.recursor [u, v] quotLiftType 2 2 0 #[(quotMkName, .app (.bvar 2) (.bvar 0))] none
+  let indInfo := ConstantInfo.recursor [u] quotIndType 2 1 0 #[(quotMkName, .app (.bvar 1) (.bvar 0))] none
+  let env := { env with consts := env.consts.insert quotName (.opaque [u] quotType) }
+  let env := { env with consts := env.consts.insert quotMkName (.opaque [u] quotMkType) }
+  let env := { env with consts := env.consts.insert quotLiftName liftInfo }
+  { env with consts := env.consts.insert quotIndName indInfo }
+
 partial def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
   match decl with
   | .axiom name lparams type =>do
@@ -511,9 +562,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       | .«def» | .«theorem» => pure <| .def lparams type value
       | .«opaque» => pure <| .opaque lparams type
     return { env with consts := env.consts.insert name constInfo }
-  | .quot =>
-    -- throw "Quotients not yet supported"
-    pure env
+  | .quot => pure env.addQuot
   | .inductive indName lparams numParams indType ctors => do
     let mut env := env
     unless lparams.Nodup do
