@@ -481,7 +481,12 @@ partial def defEqParams (n : Nat) (type1 type2 : Expr) : LEnvM Unit := do
     openType domain1 do
       defEqParams n body1 body2
 
-def Environment.addQuot (env : Environment) : Environment := open Expr in
+def Environment.insertNew (env : Environment) (name : Name) (cinfo : ConstantInfo) : Except String Environment := do
+  if env.consts.contains name then
+    throw s!"Duplicate declaration: {pp name}"
+  return { env with consts := env.consts.insert name cinfo }
+
+def Environment.addQuot (env : Environment) : Except String Environment := open Expr in do
   let quotName := .simple "Quot"
   let quotMkName := quotName.str "mk"
   let quotLiftName := quotName.str "lift"
@@ -529,10 +534,10 @@ def Environment.addQuot (env : Environment) : Environment := open Expr in
 
   let liftInfo := ConstantInfo.recursor [u, v] quotLiftType 2 2 0 #[(quotMkName, .app (.bvar 2) (.bvar 0))] none
   let indInfo := ConstantInfo.recursor [u] quotIndType 2 1 0 #[(quotMkName, .app (.bvar 1) (.bvar 0))] none
-  let env := { env with consts := env.consts.insert quotName (.opaque [u] quotType) }
-  let env := { env with consts := env.consts.insert quotMkName (.opaque [u] quotMkType) }
-  let env := { env with consts := env.consts.insert quotLiftName liftInfo }
-  { env with consts := env.consts.insert quotIndName indInfo }
+  let env ← env.insertNew quotName (.opaque [u] quotType)
+  let env ← env.insertNew quotMkName (.opaque [u] quotMkType)
+  let env ← env.insertNew quotLiftName liftInfo
+  env.insertNew quotIndName indInfo
 
 partial def Environment.add (env : Environment) (decl : Declaration) : Except String Environment :=
   match decl with
@@ -542,8 +547,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       appendError (fun _ => s!"… while checking declaration {pp name}") do
       let _ ← inferType type
-    -- TODO: Check for duplicate names
-    return { env with consts := env.consts.insert name (.opaque lparams type) }
+    env.insertNew name (.opaque lparams type)
   | .def name lparams type value kind => do
     unless lparams.Nodup do
       throw s!"Duplicate level parameters in declaration of {pp name}"
@@ -557,12 +561,11 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
       let type' ← inferType value
       assertIsDefEq type type'
       pure ()
-    -- TODO: Check for duplicate names
     let constInfo  ← match kind with
       | .«def» | .«theorem» => pure <| .def lparams type value
       | .«opaque» => pure <| .opaque lparams type
-    return { env with consts := env.consts.insert name constInfo }
-  | .quot => pure env.addQuot
+    env.insertNew name constInfo
+  | .quot => env.addQuot
   | .inductive indName lparams numParams indType ctors => do
     let mut env := env
     unless lparams.Nodup do
@@ -583,7 +586,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
         return !(ctorType matches .forall ..)
 
     let indInfo := .inductive lparams indType numParams numIndices (ctors.map (·.1)) isUnit
-    env := { env with consts := env.consts.insert indName indInfo }
+    env ← env.insertNew indName indInfo
     ReaderT.run (r := { env, lparams := .ofList lparams}) do
       for (ctorName, ctorType) in ctors do
         appendError (fun _ => s!"… while checking type of constructor {pp ctorName}") do
@@ -637,7 +640,7 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
           checkCtorType 0 (numParams + 1) ctorType
 
     for (ctorName, ctorType) in ctors do
-      env := { env with consts := env.consts.insert ctorName (.opaque lparams ctorType) }
+      env ← env.insertNew ctorName (.opaque lparams ctorType)
 
     -- Now we can generate the recursors
     let elimToSort ← ReaderT.run (r := { env, lparams := .ofList lparams}) do
@@ -765,6 +768,6 @@ partial def Environment.add (env : Environment) (decl : Declaration) : Except St
             return (ctorName, rhs)
 
     let recInfo := ConstantInfo.recursor lparams' recType numParams numCtors numIndices rules kType?
-    env := { env with consts := env.consts.insert recName recInfo }
+    env ← env.insertNew recName recInfo
 
     pure env
