@@ -235,12 +235,12 @@ partial def inferType : Expr → LEnvM Expr
     return .sort u
   | .lam name type body => do
     let s1 ← inferType type
-    assertIsSort s1
+    assertIsSort (← whnf s1)
     let t2 ← openType type <| inferType body
     return .forall name type t2
   | .let _name type value body => do
     let s1 ← inferType type
-    assertIsSort s1
+    assertIsSort (← whnf s1)
     let valueType ← inferType value
     assertIsDefEq type valueType
     let body' := body.subst value
@@ -251,7 +251,7 @@ partial def inferType : Expr → LEnvM Expr
 
 partial def isProp (type : Expr) : LEnvM Bool := do
   let s ← inferType type
-  let u ← sort s
+  let u ← sort (← whnf s)
   return u.isZero
 
 partial def inferProj (n : Name) (idx : Nat) (e : Expr) : LEnvM Expr := do
